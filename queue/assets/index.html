@@ -110,6 +110,7 @@
 
         .card.pending::before { background-color: var(--pending); }
         .card.running::before { background-color: var(--running); }
+        .card.processed::before { background-color: var(--running); }
         .card.failed::before { background-color: var(--failed); }
 
         .card-title {
@@ -129,6 +130,7 @@
 
         .card.pending .card-value { color: var(--pending); text-shadow: 0 0 10px rgba(56, 189, 248, 0.2); }
         .card.running .card-value { color: var(--running); text-shadow: 0 0 10px rgba(52, 211, 153, 0.2); }
+        .card.processed .card-value { color: var(--running); text-shadow: 0 0 10px rgba(52, 211, 153, 0.2); }
         .card.failed .card-value { color: var(--failed); text-shadow: 0 0 10px rgba(248, 113, 113, 0.2); }
 
         .table-container {
@@ -195,6 +197,58 @@
             animation: pulse-animation 1.5s infinite;
         }
 
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(255, 255, 255, 0.01);
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .tab-btn.active {
+            color: var(--primary);
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+        }
+
+        .trace-id {
+            font-family: monospace;
+            background: rgba(99, 102, 241, 0.08);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            color: #a5b4fc;
+            padding: 0.2rem 0.5rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+        }
+
+        .error-msg {
+            color: var(--failed);
+            font-size: 0.85rem;
+            background: rgba(239, 68, 68, 0.05);
+            border: 1px solid rgba(239, 68, 68, 0.1);
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            font-family: monospace;
+            word-break: break-all;
+        }
+
         @keyframes pulse-animation {
             0% {
                 transform: scale(0.95);
@@ -218,7 +272,7 @@
             <div style="display: flex; align-items: center; font-size: 0.875rem; color: var(--text-muted);">
                 <span class="pulse"></span> Live
             </div>
-            <span class="badge">v0.4.0</span>
+            <span class="badge">v0.5.0</span>
         </div>
     </header>
 
@@ -231,6 +285,10 @@
             <div class="card running">
                 <span class="card-title">Active Workers</span>
                 <span class="card-value" id="val-running">0</span>
+            </div>
+            <div class="card processed">
+                <span class="card-title">Processed Jobs</span>
+                <span class="card-value" id="val-processed">0</span>
             </div>
             <div class="card failed">
                 <span class="card-title">Failed Jobs</span>
@@ -246,6 +304,7 @@
                         <th>Queue Name</th>
                         <th>Pending</th>
                         <th>Active</th>
+                        <th>Processed</th>
                         <th>Failed</th>
                     </tr>
                 </thead>
@@ -257,9 +316,96 @@
                 No active queues discovered yet.
             </div>
         </div>
+
+        <div class="table-container">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="pending" onclick="switchTab('pending')">Pending</button>
+                <button class="tab-btn" data-tab="running" onclick="switchTab('running')">Active</button>
+                <button class="tab-btn" data-tab="processed" onclick="switchTab('processed')">Processed</button>
+                <button class="tab-btn" data-tab="failed" onclick="switchTab('failed')">Failed</button>
+            </div>
+            <table id="jobs-table">
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Queue</th>
+                        <th>Job Name</th>
+                        <th>Trace ID</th>
+                        <th id="th-extra" style="display: none;">Details</th>
+                    </tr>
+                </thead>
+                <tbody id="jobs-list">
+                    <!-- Dynamic Job Rows -->
+                </tbody>
+            </table>
+            <div id="no-jobs" class="empty-state" style="display: none;">
+                No pending jobs logs found.
+            </div>
+        </div>
     </main>
 
     <script>
+        let activeTab = 'pending';
+        let latestJobs = [];
+
+        function switchTab(tab) {
+            activeTab = tab;
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
+            });
+            renderJobs();
+        }
+
+        function renderJobs() {
+            const tbody = document.getElementById('jobs-list');
+            const noJobs = document.getElementById('no-jobs');
+            const table = document.getElementById('jobs-table');
+            const thExtra = document.getElementById('th-extra');
+
+            tbody.innerHTML = '';
+            
+            const statusMap = {
+                'pending': 'pending',
+                'running': 'running',
+                'processed': 'processed',
+                'failed': 'failed'
+            };
+            const targetStatus = statusMap[activeTab];
+            const filtered = latestJobs.filter(j => j.status === targetStatus);
+
+            if (filtered.length === 0) {
+                table.style.display = 'none';
+                noJobs.style.display = 'block';
+                noJobs.innerText = `No ${activeTab} jobs logs found.`;
+                return;
+            }
+
+            table.style.display = 'table';
+            noJobs.style.display = 'none';
+
+            if (activeTab === 'failed') {
+                thExtra.style.display = 'table-cell';
+            } else {
+                thExtra.style.display = 'none';
+            }
+
+            filtered.forEach(j => {
+                const tr = document.createElement('tr');
+                let extraTd = '';
+                if (activeTab === 'failed') {
+                    extraTd = `<td><div class="error-msg">${j.error_message || 'Unknown error'}</div></td>`;
+                }
+                tr.innerHTML = `
+                    <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${j.job_id}</td>
+                    <td style="font-weight: 600;">${j.queue}</td>
+                    <td>${j.name}</td>
+                    <td><span class="trace-id">${j.trace_id || 'N/A'}</span></td>
+                    ${extraTd}
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
         async function fetchStats() {
             try {
                 const res = await fetch('/api/stats');
@@ -268,6 +414,7 @@
                 
                 document.getElementById('val-pending').innerText = data.pending || 0;
                 document.getElementById('val-running').innerText = data.running || 0;
+                document.getElementById('val-processed').innerText = data.processed || 0;
                 document.getElementById('val-failed').innerText = data.failed || 0;
 
                 const tbody = document.getElementById('queues-list');
@@ -291,18 +438,22 @@
                         <td style="font-weight: 600;">${q.name}</td>
                         <td style="color: var(--pending);">${q.pending}</td>
                         <td style="color: var(--running);">${q.running}</td>
+                        <td style="color: var(--running);">${q.processed || 0}</td>
                         <td style="color: var(--failed);">${q.failed}</td>
                     `;
                     tbody.appendChild(tr);
                 });
+
+                latestJobs = data.jobs || [];
+                renderJobs();
             } catch (err) {
                 console.error(err);
             }
         }
 
-        // Poll every 2 seconds
+        // Poll every 5 seconds as requested
         fetchStats();
-        setInterval(fetchStats, 2000);
+        setInterval(fetchStats, 5000);
     </script>
 </body>
 </html>

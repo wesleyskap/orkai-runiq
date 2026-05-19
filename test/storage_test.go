@@ -159,11 +159,36 @@ func assertRedisEnqueueDequeue(t *testing.T, ctx context.Context, s queue.Storag
 		t.Fatalf("failed to enqueue to redis: %v", err)
 	}
 
+	stats, err := s.GetStats(ctx)
+	if err != nil {
+		t.Fatalf("failed to get stats: %v", err)
+	}
+	if stats.Pending != 1 {
+		t.Errorf("expected 1 pending job, got %d", stats.Pending)
+	}
+
 	deq, err := s.Dequeue(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to dequeue from redis: %v", err)
 	}
 	if deq == nil || deq.JobID != env.JobID {
 		t.Errorf("mismatched dequeued job ID, expected %s, got %v", env.JobID, deq)
+	}
+
+	stats, _ = s.GetStats(ctx)
+	if stats.Running != 1 {
+		t.Errorf("expected 1 active job, got %d", stats.Running)
+	}
+
+	if err := s.Ack(ctx, env.JobID); err != nil {
+		t.Fatalf("failed to ack job: %v", err)
+	}
+
+	stats, _ = s.GetStats(ctx)
+	if stats.Processed != 1 {
+		t.Errorf("expected 1 processed job, got %d", stats.Processed)
+	}
+	if len(stats.Jobs) != 1 || stats.Jobs[0].Status != "processed" {
+		t.Errorf("expected 1 job listing in stats with 'processed' status, got %v", stats.Jobs)
 	}
 }

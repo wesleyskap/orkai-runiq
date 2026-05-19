@@ -20,20 +20,34 @@ type JobEnvelope struct {
 	TraceContext TraceContext `json:"trace_context"`
 }
 
+// JobDetail represents the serialized metadata for listing jobs in the dashboard.
+type JobDetail struct {
+	JobID        string `json:"job_id"`
+	Queue        string `json:"queue"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	TraceID      string `json:"trace_id"`
+	ErrorMessage string `json:"error_message,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
+}
+
 // QueueStats holds job counts grouped by queue.
 type QueueStats struct {
-	Name    string `json:"name"`
-	Pending int64  `json:"pending"`
-	Running int64  `json:"running"`
-	Failed  int64  `json:"failed"`
+	Name      string `json:"name"`
+	Pending   int64  `json:"pending"`
+	Running   int64  `json:"running"`
+	Failed    int64  `json:"failed"`
+	Processed int64  `json:"processed"`
 }
 
 // Stats holds aggregate and queue-specific job counts.
 type Stats struct {
-	Pending int64        `json:"pending"`
-	Running int64        `json:"running"`
-	Failed  int64        `json:"failed"`
-	Queues  []QueueStats `json:"queues"`
+	Pending   int64        `json:"pending"`
+	Running   int64        `json:"running"`
+	Failed    int64        `json:"failed"`
+	Processed int64        `json:"processed"`
+	Queues    []QueueStats `json:"queues"`
+	Jobs      []JobDetail  `json:"jobs,omitempty"`
 }
 
 // Storage defines the persistence engine interface for enqueuing and processing tasks.

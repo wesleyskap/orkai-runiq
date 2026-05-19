@@ -58,9 +58,9 @@ func (p *PostgresStorage) Dequeue(ctx context.Context, queueName string) (*JobEn
 	return &env, err
 }
 
-// Ack deletes the job on success.
+// Ack marks the job as processed on success.
 func (p *PostgresStorage) Ack(ctx context.Context, jobID string) error {
-	_, err := p.db.ExecContext(ctx, "DELETE FROM runiq_jobs WHERE job_id = $1", jobID)
+	_, err := p.db.ExecContext(ctx, "UPDATE runiq_jobs SET status = 'processed', locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE job_id = $1", jobID)
 	return err
 }
 
@@ -68,7 +68,7 @@ func (p *PostgresStorage) Ack(ctx context.Context, jobID string) error {
 func (p *PostgresStorage) Fail(ctx context.Context, jobID string, runErr error) error {
 	query := `
 		UPDATE runiq_jobs
-		SET status = 'failed', error_message = $2, attempts = attempts + 1, locked_at = NULL
+		SET status = 'failed', error_message = $2, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
 		WHERE job_id = $1`
 	_, err := p.db.ExecContext(ctx, query, jobID, runErr.Error())
 	return err
@@ -94,7 +94,7 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 	return err
 }
 
-// GetStats queries the PostgreSQL database for job status counts.
+// GetStats queries the PostgreSQL database for job status counts and recent job details.
 func (p *PostgresStorage) GetStats(ctx context.Context) (*Stats, error) {
 	query := `
 		SELECT queue, status, COUNT(*)
@@ -119,6 +119,31 @@ func (p *PostgresStorage) GetStats(ctx context.Context) (*Stats, error) {
 	for _, qs := range queueMap {
 		stats.Queues = append(stats.Queues, *qs)
 	}
+
+	// Fetch recent job details
+	jobsQuery := `
+		SELECT job_id, queue, name, status, trace_id, error_message, created_at
+		FROM runiq_jobs
+		ORDER BY created_at DESC
+		LIMIT 100`
+	jRows, err := p.db.QueryContext(ctx, jobsQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer jRows.Close()
+
+	for jRows.Next() {
+		var jd JobDetail
+		var createdAt time.Time
+		var errMsg sql.NullString
+		if err := jRows.Scan(&jd.JobID, &jd.Queue, &jd.Name, &jd.Status, &jd.TraceID, &errMsg, &createdAt); err != nil {
+			return nil, err
+		}
+		jd.ErrorMessage = errMsg.String
+		jd.CreatedAt = createdAt.Format(time.RFC3339)
+		stats.Jobs = append(stats.Jobs, jd)
+	}
+
 	return &stats, nil
 }
 
@@ -138,5 +163,8 @@ func (p *PostgresStorage) accumulateStats(stats *Stats, queueMap map[string]*Que
 	case "failed":
 		stats.Failed += count
 		qs.Failed += count
+	case "processed":
+		stats.Processed += count
+		qs.Processed += count
 	}
 }

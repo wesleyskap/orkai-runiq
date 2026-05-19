@@ -16,10 +16,10 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 * **Job**: Interface with the Perform(ctx, args) signature which must be implemented by any background task.
 
 ### queue/postgres.go
-* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, and calculating job stats.
+* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, and calculating job stats (Pending, Active, Processed, and Failed).
 
 ### queue/redis.go
-* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, and tracking queue stats (Pending, Active, and Failed) using dedicated Redis Sets.
+* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, and tracking queue stats (Pending, Active, Processed, and Failed) using dedicated Redis Sets and Lists.
 
 ### queue/client.go
 * **Client**: Client helper for enqueuing jobs with transparent Trace ID propagation.
@@ -28,7 +28,7 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 * **WorkerPool**: Concurrent job processor utilizing buffered channel semaphores, context/trace restoration, and panic recovery.
 
 ### queue/server.go
-* **Server**: Native Go HTTP server displaying an embedded real-time HTML/CSS dashboard and serving statistics in JSON format.
+* **Server**: Native Go HTTP server displaying an embedded real-time HTML/CSS dashboard (with tabbed logs for Pending, Active, Processed, and Failed states updating every 5 seconds) and serving statistics in JSON format.
 
 ### test/queue_test.go
 * **TestJobEnvelopeSerialization**: Verifies JSON serialization and deserialization of job envelopes.

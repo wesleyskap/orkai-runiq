@@ -2,6 +2,15 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [0.6.0] - 2026-05-19
+
+### Added
+- Track active, failed, and successfully processed jobs dynamically in Redis and PostgreSQL drivers.
+- Redesigned UI Dashboard with modern glassmorphic tabbed list navigation (Pending, Active, Processed, Failed).
+- Custom 5-second polling rate for real-time dashboard UI updates.
+- Extended JSON statistics API to return detailed job list metadata.
+
+
 ## [0.5.0] - 2026-05-19
 
 ### Added
