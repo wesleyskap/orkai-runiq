@@ -20,6 +20,22 @@ type JobEnvelope struct {
 	TraceContext TraceContext `json:"trace_context"`
 }
 
+// QueueStats holds job counts grouped by queue.
+type QueueStats struct {
+	Name    string `json:"name"`
+	Pending int64  `json:"pending"`
+	Running int64  `json:"running"`
+	Failed  int64  `json:"failed"`
+}
+
+// Stats holds aggregate and queue-specific job counts.
+type Stats struct {
+	Pending int64        `json:"pending"`
+	Running int64        `json:"running"`
+	Failed  int64        `json:"failed"`
+	Queues  []QueueStats `json:"queues"`
+}
+
 // Storage defines the persistence engine interface for enqueuing and processing tasks.
 type Storage interface {
 	// Enqueue persists a job envelope into the designated storage backend.
@@ -41,6 +57,11 @@ type Storage interface {
 	// Usage example:
 	//	err := storage.Fail(ctx, "job-123", err)
 	Fail(ctx context.Context, jobID string, err error) error
+
+	// GetStats retrieves the current statistics of jobs in storage.
+	// Usage example:
+	//	stats, err := storage.GetStats(ctx)
+	GetStats(ctx context.Context) (*Stats, error)
 }
 
 // Job defines the contract that every background task must implement.

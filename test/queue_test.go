@@ -11,9 +11,10 @@ import (
 
 // FakeStorage implements queue.Storage interface for testing purposes.
 type FakeStorage struct {
-	Enqueued []*queue.JobEnvelope
-	Acked    []string
-	Failed   map[string]error
+	Enqueued      []*queue.JobEnvelope
+	Acked         []string
+	Failed        map[string]error
+	StatsToReturn *queue.Stats
 }
 
 func (f *FakeStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -41,6 +42,13 @@ func (f *FakeStorage) Fail(ctx context.Context, jobID string, err error) error {
 	}
 	f.Failed[jobID] = err
 	return nil
+}
+
+func (f *FakeStorage) GetStats(ctx context.Context) (*queue.Stats, error) {
+	if f.StatsToReturn != nil {
+		return f.StatsToReturn, nil
+	}
+	return &queue.Stats{}, nil
 }
 
 // DummyJob implements queue.Job for verification.

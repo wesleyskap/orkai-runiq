@@ -93,3 +93,50 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 	_, err := db.ExecContext(ctx, schema)
 	return err
 }
+
+// GetStats queries the PostgreSQL database for job status counts.
+func (p *PostgresStorage) GetStats(ctx context.Context) (*Stats, error) {
+	query := `
+		SELECT queue, status, COUNT(*)
+		FROM runiq_jobs
+		GROUP BY queue, status`
+	rows, err := p.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats Stats
+	queueMap := make(map[string]*QueueStats)
+	for rows.Next() {
+		var qName, status string
+		var count int64
+		if err := rows.Scan(&qName, &status, &count); err != nil {
+			return nil, err
+		}
+		p.accumulateStats(&stats, queueMap, qName, status, count)
+	}
+	for _, qs := range queueMap {
+		stats.Queues = append(stats.Queues, *qs)
+	}
+	return &stats, nil
+}
+
+func (p *PostgresStorage) accumulateStats(stats *Stats, queueMap map[string]*QueueStats, qName, status string, count int64) {
+	qs, ok := queueMap[qName]
+	if !ok {
+		qs = &QueueStats{Name: qName}
+		queueMap[qName] = qs
+	}
+	switch status {
+	case "pending":
+		stats.Pending += count
+		qs.Pending += count
+	case "running":
+		stats.Running += count
+		qs.Running += count
+	case "failed":
+		stats.Failed += count
+		qs.Failed += count
+	}
+}

@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orkai Runiq Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(20, 26, 46, 0.6);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --primary: #6366f1;
+            --pending: #38bdf8;
+            --running: #34d399;
+            --failed: #f87171;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem 1rem;
+            overflow-x: hidden;
+            background-image: radial-gradient(circle at 50% -20%, rgba(99, 102, 241, 0.15) 0%, transparent 50%);
+        }
+
+        header {
+            width: 100%;
+            max-width: 1000px;
+            margin-bottom: 2.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.025em;
+        }
+
+        .badge {
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            color: #818cf8;
+            padding: 0.35rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+
+        main {
+            width: 100%;
+            max-width: 1000px;
+            display: grid;
+            gap: 2rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .card {
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+        }
+
+        .card.pending::before { background-color: var(--pending); }
+        .card.running::before { background-color: var(--running); }
+        .card.failed::before { background-color: var(--failed); }
+
+        .card-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+
+        .card-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .card.pending .card-value { color: var(--pending); text-shadow: 0 0 10px rgba(56, 189, 248, 0.2); }
+        .card.running .card-value { color: var(--running); text-shadow: 0 0 10px rgba(52, 211, 153, 0.2); }
+        .card.failed .card-value { color: var(--failed); text-shadow: 0 0 10px rgba(248, 113, 113, 0.2); }
+
+        .table-container {
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        .table-header {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.02);
+            padding: 1rem 1.5rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border-color);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.95rem;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.01);
+        }
+
+        .empty-state {
+            padding: 3rem 1.5rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 1rem;
+        }
+
+        .pulse {
+            width: 8px;
+            height: 8px;
+            background-color: var(--running);
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 0.5rem;
+            box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7);
+            animation: pulse-animation 1.5s infinite;
+        }
+
+        @keyframes pulse-animation {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7);
+            }
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 6px rgba(52, 211, 153, 0);
+            }
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Runiq Dashboard</h1>
+        <div style="display: flex; align-items: center; gap: 1rem;">
+            <div style="display: flex; align-items: center; font-size: 0.875rem; color: var(--text-muted);">
+                <span class="pulse"></span> Live
+            </div>
+            <span class="badge">v0.4.0</span>
+        </div>
+    </header>
+
+    <main>
+        <div class="stats-grid">
+            <div class="card pending">
+                <span class="card-title">Pending Jobs</span>
+                <span class="card-value" id="val-pending">0</span>
+            </div>
+            <div class="card running">
+                <span class="card-title">Active Workers</span>
+                <span class="card-value" id="val-running">0</span>
+            </div>
+            <div class="card failed">
+                <span class="card-title">Failed Jobs</span>
+                <span class="card-value" id="val-failed">0</span>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <div class="table-header">Queues Activity</div>
+            <table id="queues-table">
+                <thead>
+                    <tr>
+                        <th>Queue Name</th>
+                        <th>Pending</th>
+                        <th>Active</th>
+                        <th>Failed</th>
+                    </tr>
+                </thead>
+                <tbody id="queues-list">
+                    <!-- Dynamic Rows -->
+                </tbody>
+            </table>
+            <div id="no-queues" class="empty-state" style="display: none;">
+                No active queues discovered yet.
+            </div>
+        </div>
+    </main>
+
+    <script>
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                if (!res.ok) throw new Error('Failed to fetch statistics');
+                const data = await res.json();
+                
+                document.getElementById('val-pending').innerText = data.pending || 0;
+                document.getElementById('val-running').innerText = data.running || 0;
+                document.getElementById('val-failed').innerText = data.failed || 0;
+
+                const tbody = document.getElementById('queues-list');
+                const noQueues = document.getElementById('no-queues');
+                const table = document.getElementById('queues-table');
+                
+                tbody.innerHTML = '';
+                
+                if (!data.queues || data.queues.length === 0) {
+                    table.style.display = 'none';
+                    noQueues.style.display = 'block';
+                    return;
+                }
+
+                table.style.display = 'table';
+                noQueues.style.display = 'none';
+
+                data.queues.forEach(q => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td style="font-weight: 600;">${q.name}</td>
+                        <td style="color: var(--pending);">${q.pending}</td>
+                        <td style="color: var(--running);">${q.running}</td>
+                        <td style="color: var(--failed);">${q.failed}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        // Poll every 2 seconds
+        fetchStats();
+        setInterval(fetchStats, 2000);
+    </script>
+</body>
+</html>

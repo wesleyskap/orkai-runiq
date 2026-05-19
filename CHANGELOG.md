@@ -2,6 +2,14 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [0.4.0] - 2026-05-19
+
+### Added
+- Native HTTP dashboard server (`queue.Server`) to expose statistics API and serve embedded assets.
+- Embedded Single Page Application (SPA) dashboard UI in `queue/assets/index.html` featuring a modern glassmorphism dark mode.
+- Storage stats aggregation support (`queue.Storage.GetStats`) implemented for PostgreSQL and Redis drivers.
+- Conformance test coverage in `test/server_test.go` checking `/api/stats` JSON data and `/` embedded UI page rendering.
+
 ## [0.3.0] - 2026-05-19
 
 ### Added

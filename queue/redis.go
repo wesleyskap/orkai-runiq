@@ -28,6 +28,7 @@ func (r *RedisStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
 	pipe := r.client.Pipeline()
 	pipe.HSet(ctx, "runiq:jobs", env.JobID, data)
 	pipe.LPush(ctx, "runiq:queue:"+env.Queue, env.JobID)
+	pipe.SAdd(ctx, "runiq:queues", env.Queue)
 	_, err = pipe.Exec(ctx)
 	return err
 }
@@ -63,4 +64,25 @@ func (r *RedisStorage) Ack(ctx context.Context, jobID string) error {
 // Fail deletes or transitions the job details on failure.
 func (r *RedisStorage) Fail(ctx context.Context, jobID string, runErr error) error {
 	return r.client.HDel(ctx, "runiq:jobs", jobID).Err()
+}
+
+// GetStats retrieves the current statistics of jobs in Redis.
+func (r *RedisStorage) GetStats(ctx context.Context) (*Stats, error) {
+	queues, err := r.client.SMembers(ctx, "runiq:queues").Result()
+	if err != nil {
+		return nil, err
+	}
+	var stats Stats
+	for _, q := range queues {
+		pending, err := r.client.LLen(ctx, "runiq:queue:"+q).Result()
+		if err != nil {
+			return nil, err
+		}
+		stats.Pending += pending
+		stats.Queues = append(stats.Queues, QueueStats{
+			Name:    q,
+			Pending: pending,
+		})
+	}
+	return &stats, nil
 }

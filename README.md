@@ -12,20 +12,23 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 ### queue/queue.go
 * **TraceContext**: Struct encapsulating tracing correlation metadata (TraceID and SpanID).
 * **JobEnvelope**: Envelope structure wrapping job parameters and metadata for storage.
-* **Storage**: Interface defining the persistence engine operations (Enqueue, Dequeue, Ack, and Fail).
+* **Storage**: Interface defining the persistence engine operations (Enqueue, Dequeue, Ack, Fail, and GetStats).
 * **Job**: Interface with the Perform(ctx, args) signature which must be implemented by any background task.
 
 ### queue/postgres.go
-* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety and auto-creating schema tables.
+* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, and calculating job stats.
 
 ### queue/redis.go
-* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations.
+* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, and tracking queue stats.
 
 ### queue/client.go
 * **Client**: Client helper for enqueuing jobs with transparent Trace ID propagation.
 
 ### queue/worker.go
 * **WorkerPool**: Concurrent job processor utilizing buffered channel semaphores, context/trace restoration, and panic recovery.
+
+### queue/server.go
+* **Server**: Native Go HTTP server displaying an embedded real-time HTML/CSS dashboard and serving statistics in JSON format.
 
 ### test/queue_test.go
 * **TestJobEnvelopeSerialization**: Verifies JSON serialization and deserialization of job envelopes.
@@ -39,6 +42,10 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 * **TestClientTraceExtraction**: Verifies Client enqueues jobs with propagated trace details.
 * **TestWorkerPoolExecution**: Validates worker startup, context injection, and success telemetry.
 * **TestWorkerPoolPanicRecovery**: Validates that worker handles panics without crashing and marks storage failures.
+
+### test/server_test.go
+* **TestDashboardStatsEndpoint**: Verifies that the JSON API endpoint returns correct aggregations.
+* **TestDashboardUIEndpoint**: Assures the embedded dashboard template page is loaded and served.
 
 ## Usage
 
@@ -122,6 +129,14 @@ func main() {
 		log.Fatalf("failed to enqueue: %v", err)
 	}
 
+	// 5. Initialize and Start Dashboard Server
+	server := queue.NewServer(storage, ":8080")
+	go func() {
+		if err := server.Start(); err != nil {
+			log.Printf("Dashboard server stopped: %v", err)
+		}
+	}()
+
 	time.Sleep(500 * time.Millisecond) // Wait for worker to consume
 }
 ```
@@ -142,6 +157,10 @@ Expected output:
 --- PASS: TestJobEnvelopeSerialization (0.00s)
 === RUN   TestJobInterfaceConformance
 --- PASS: TestJobInterfaceConformance (0.00s)
+=== RUN   TestDashboardStatsEndpoint
+--- PASS: TestDashboardStatsEndpoint (0.00s)
+=== RUN   TestDashboardUIEndpoint
+--- PASS: TestDashboardUIEndpoint (0.03s)
 === RUN   TestPostgresStorageFlow
 === RUN   TestPostgresStorageFlow/EnqueueAndDequeue
 === RUN   TestPostgresStorageFlow/SkipLockedConcurrency
@@ -150,7 +169,7 @@ Expected output:
     --- PASS: TestPostgresStorageFlow/SkipLockedConcurrency (0.02s)
 === RUN   TestRedisStorageFlow
 === RUN   TestRedisStorageFlow/EnqueueAndDequeue
---- PASS: TestRedisStorageFlow (0.01s)
+--- PASS: TestRedisStorageFlow (0.02s)
     --- PASS: TestRedisStorageFlow/EnqueueAndDequeue (0.00s)
 === RUN   TestClientTraceExtraction
 --- PASS: TestClientTraceExtraction (0.00s)
@@ -159,6 +178,6 @@ Expected output:
 === RUN   TestWorkerPoolPanicRecovery
 --- PASS: TestWorkerPoolPanicRecovery (0.10s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/test	0.751s
+ok  	github.com/wesleyskap/orkai-runiq/test	0.837s
 ```
 
