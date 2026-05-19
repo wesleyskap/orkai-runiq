@@ -51,6 +51,10 @@ func (f *FakeStorage) GetStats(ctx context.Context) (*queue.Stats, error) {
 	return &queue.Stats{}, nil
 }
 
+func (f *FakeStorage) PollScheduled(ctx context.Context, queueName string) error {
+	return nil
+}
+
 // DummyJob implements queue.Job for verification.
 type DummyJob struct {
 	Executed bool

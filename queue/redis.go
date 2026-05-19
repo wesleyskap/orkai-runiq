@@ -3,6 +3,8 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -19,16 +21,30 @@ func NewRedisStorage(client *redis.Client) (*RedisStorage, error) {
 	return &RedisStorage{client: client}, nil
 }
 
-// Enqueue persists a job envelope into Redis hash and pushes the job ID onto the queue list.
+// Enqueue persists a job envelope into Redis hash. If scheduled for future, adds to ZSet; otherwise pushes onto queue list.
 func (r *RedisStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
+	maxAttempts := env.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	env.MaxAttempts = maxAttempts
+
 	data, err := json.Marshal(env)
 	if err != nil {
 		return err
 	}
 	pipe := r.client.Pipeline()
 	pipe.HSet(ctx, "runiq:jobs", env.JobID, data)
-	pipe.LPush(ctx, "runiq:queue:"+env.Queue, env.JobID)
 	pipe.SAdd(ctx, "runiq:queues", env.Queue)
+
+	if env.RunAt != nil && env.RunAt.After(time.Now()) {
+		pipe.ZAdd(ctx, "runiq:scheduled:"+env.Queue, redis.Z{
+			Score:  float64(env.RunAt.Unix()),
+			Member: env.JobID,
+		})
+	} else {
+		pipe.LPush(ctx, "runiq:queue:"+env.Queue, env.JobID)
+	}
 	_, err = pipe.Exec(ctx)
 	return err
 }
@@ -80,7 +96,7 @@ func (r *RedisStorage) Ack(ctx context.Context, jobID string) error {
 	return err
 }
 
-// Fail transitions the job from active set to failed list.
+// Fail transitions the job from active set to failed list, or schedules a retry with exponential backoff if attempts < max_attempts.
 func (r *RedisStorage) Fail(ctx context.Context, jobID string, runErr error) error {
 	data, err := r.client.HGet(ctx, "runiq:jobs", jobID).Result()
 	if err == redis.Nil {
@@ -93,11 +109,72 @@ func (r *RedisStorage) Fail(ctx context.Context, jobID string, runErr error) err
 	if err := json.Unmarshal([]byte(data), &env); err != nil {
 		return err
 	}
+
+	env.Attempts++
+	maxAttempts := env.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	if env.Attempts < maxAttempts {
+		delaySec := (1 << uint(env.Attempts-1)) * 10
+		if delaySec > 3600 {
+			delaySec = 3600
+		}
+		jitterSec := time.Now().Nanosecond() % 3
+		nextRun := time.Now().Add(time.Duration(delaySec+jitterSec) * time.Second)
+		env.RunAt = &nextRun
+
+		updatedData, err := json.Marshal(&env)
+		if err != nil {
+			return err
+		}
+
+		pipe := r.client.Pipeline()
+		pipe.HSet(ctx, "runiq:jobs", env.JobID, updatedData)
+		pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
+		pipe.ZAdd(ctx, "runiq:scheduled:"+env.Queue, redis.Z{
+			Score:  float64(nextRun.Unix()),
+			Member: jobID,
+		})
+		_, err = pipe.Exec(ctx)
+		return err
+	} else {
+		updatedData, err := json.Marshal(&env)
+		if err != nil {
+			return err
+		}
+
+		pipe := r.client.Pipeline()
+		pipe.HSet(ctx, "runiq:jobs", env.JobID, updatedData)
+		pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
+		pipe.LPush(ctx, "runiq:failed:"+env.Queue, jobID)
+		pipe.LTrim(ctx, "runiq:failed:"+env.Queue, 0, 49)
+		pipe.HSet(ctx, "runiq:errors", jobID, runErr.Error())
+		_, err = pipe.Exec(ctx)
+		return err
+	}
+}
+
+// PollScheduled atomically moves scheduled jobs that are due from ZSet to list.
+func (r *RedisStorage) PollScheduled(ctx context.Context, queueName string) error {
+	now := time.Now().Unix()
+	jobIDs, err := r.client.ZRangeByScore(ctx, "runiq:scheduled:"+queueName, &redis.ZRangeBy{
+		Min: "-inf",
+		Max: fmt.Sprintf("%d", now),
+	}).Result()
+	if err != nil {
+		return err
+	}
+	if len(jobIDs) == 0 {
+		return nil
+	}
+
 	pipe := r.client.Pipeline()
-	pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
-	pipe.LPush(ctx, "runiq:failed:"+env.Queue, jobID)
-	pipe.LTrim(ctx, "runiq:failed:"+env.Queue, 0, 49)
-	pipe.HSet(ctx, "runiq:errors", jobID, runErr.Error())
+	for _, id := range jobIDs {
+		pipe.ZRem(ctx, "runiq:scheduled:"+queueName, id)
+		pipe.LPush(ctx, "runiq:queue:"+queueName, id)
+	}
 	_, err = pipe.Exec(ctx)
 	return err
 }
@@ -122,6 +199,10 @@ func (r *RedisStorage) GetStats(ctx context.Context) (*Stats, error) {
 		if err != nil {
 			return nil, err
 		}
+		scheduled, err := r.client.ZCard(ctx, "runiq:scheduled:"+q).Result()
+		if err != nil {
+			return nil, err
+		}
 		active, err := r.client.SCard(ctx, "runiq:active:"+q).Result()
 		if err != nil {
 			return nil, err
@@ -135,14 +216,15 @@ func (r *RedisStorage) GetStats(ctx context.Context) (*Stats, error) {
 			return nil, err
 		}
 
-		stats.Pending += pending
+		totalPending := pending + scheduled
+		stats.Pending += totalPending
 		stats.Running += active
 		stats.Processed += processed
 		stats.Failed += failed
 
 		stats.Queues = append(stats.Queues, QueueStats{
 			Name:      q,
-			Pending:   pending,
+			Pending:   totalPending,
 			Running:   active,
 			Processed: processed,
 			Failed:    failed,
@@ -150,6 +232,11 @@ func (r *RedisStorage) GetStats(ctx context.Context) (*Stats, error) {
 
 		pIDs, _ := r.client.LRange(ctx, "runiq:queue:"+q, 0, 49).Result()
 		for _, id := range pIDs {
+			allJobIDs = append(allJobIDs, id)
+			jobsMeta = append(jobsMeta, jobMeta{id: id, queue: q, status: "pending"})
+		}
+		sIDs, _ := r.client.ZRange(ctx, "runiq:scheduled:"+q, 0, 49).Result()
+		for _, id := range sIDs {
 			allJobIDs = append(allJobIDs, id)
 			jobsMeta = append(jobsMeta, jobMeta{id: id, queue: q, status: "pending"})
 		}

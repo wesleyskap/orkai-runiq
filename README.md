@@ -16,10 +16,10 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 * **Job**: Interface with the Perform(ctx, args) signature which must be implemented by any background task.
 
 ### queue/postgres.go
-* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, and calculating job stats (Pending, Active, Processed, and Failed).
+* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, tracking `run_at` scheduled times, and calculating job stats (Pending, Active, Processed, and Failed).
 
 ### queue/redis.go
-* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, and tracking queue stats (Pending, Active, Processed, and Failed) using dedicated Redis Sets and Lists.
+* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, ZSets for future `run_at` schedules, and tracking queue stats (Pending, Active, Processed, and Failed) using dedicated Redis Sets and Lists.
 
 ### queue/client.go
 * **Client**: Client helper for enqueuing jobs with transparent Trace ID propagation.
@@ -139,6 +139,25 @@ func main() {
 
 	time.Sleep(500 * time.Millisecond) // Wait for worker to consume
 }
+```
+
+## Job Retries & Scheduling
+
+By default, jobs are executed up to **3 times** with an **exponential backoff delay** (e.g., 10s, 20s, 40s, up to 1 hour) and deterministic jitter if they return an error.
+
+You can customize this behavior by setting `MaxAttempts` and `RunAt` fields on a `JobEnvelope` when enqueuing:
+
+```go
+runAt := time.Now().Add(5 * time.Minute)
+envelope := &queue.JobEnvelope{
+	JobID:       "custom-job-id",
+	Queue:       "default",
+	Name:        "SendEmail",
+	Args:        []byte(`{"to":"user@example.com"}`),
+	MaxAttempts: 5,
+	RunAt:       &runAt,
+}
+err := storage.Enqueue(ctx, envelope)
 ```
 
 ## Telemetry Integration

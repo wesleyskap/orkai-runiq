@@ -2,6 +2,15 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [0.7.0] - 2026-05-19
+
+### Added
+- Automatic job retries with exponential backoff and deterministic jitter.
+- Integration of `MaxAttempts` and `Attempts` counters in `JobEnvelope` structure (defaulting to 3 max attempts).
+- Scheduled queue execution support (`run_at` parameter) in both PostgreSQL and Redis drivers.
+- Background scheduled job poller loop (`PollScheduled`) in `WorkerPool` running every 1 second.
+- Coverage verification tests in `test/storage_test.go` checking retry and scheduling states under both drivers.
+
 ## [0.6.0] - 2026-05-19
 
 ### Added

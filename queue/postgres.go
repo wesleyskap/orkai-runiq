@@ -25,14 +25,24 @@ func NewPostgresStorage(db *sql.DB) (*PostgresStorage, error) {
 
 // Enqueue persists a job envelope into PostgreSQL.
 func (p *PostgresStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
+	runAt := time.Now()
+	if env.RunAt != nil {
+		runAt = *env.RunAt
+	}
+	maxAttempts := env.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
 	query := `
-		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status, attempts, max_attempts, run_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending', 0, $7, $8)
 		ON CONFLICT (job_id) DO UPDATE SET
-			status = 'pending', attempts = 0, updated_at = CURRENT_TIMESTAMP`
+			status = 'pending', attempts = 0, max_attempts = $7, run_at = $8, updated_at = CURRENT_TIMESTAMP`
 	_, err := p.db.ExecContext(ctx, query,
 		env.JobID, env.Queue, env.Name, env.Args,
 		env.TraceContext.TraceID, env.TraceContext.SpanID,
+		maxAttempts, runAt,
 	)
 	return err
 }
@@ -44,14 +54,14 @@ func (p *PostgresStorage) Dequeue(ctx context.Context, queueName string) (*JobEn
 		SET status = 'running', locked_at = CURRENT_TIMESTAMP
 		WHERE job_id = (
 			SELECT job_id FROM runiq_jobs
-			WHERE queue = $1 AND status = 'pending'
+			WHERE queue = $1 AND status = 'pending' AND (run_at IS NULL OR run_at <= CURRENT_TIMESTAMP)
 			ORDER BY created_at ASC
 			FOR UPDATE SKIP LOCKED LIMIT 1
 		)
-		RETURNING job_id, queue, name, args, trace_id, span_id`
+		RETURNING job_id, queue, name, args, trace_id, span_id, attempts, max_attempts`
 	row := p.db.QueryRowContext(ctx, query, queueName)
 	var env JobEnvelope
-	err := row.Scan(&env.JobID, &env.Queue, &env.Name, &env.Args, &env.TraceContext.TraceID, &env.TraceContext.SpanID)
+	err := row.Scan(&env.JobID, &env.Queue, &env.Name, &env.Args, &env.TraceContext.TraceID, &env.TraceContext.SpanID, &env.Attempts, &env.MaxAttempts)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -64,14 +74,45 @@ func (p *PostgresStorage) Ack(ctx context.Context, jobID string) error {
 	return err
 }
 
-// Fail updates the status to failed and sets error details.
+// Fail updates the status to failed and sets error details. If attempts < max_attempts, schedules a retry.
 func (p *PostgresStorage) Fail(ctx context.Context, jobID string, runErr error) error {
-	query := `
-		UPDATE runiq_jobs
-		SET status = 'failed', error_message = $2, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
-		WHERE job_id = $1`
-	_, err := p.db.ExecContext(ctx, query, jobID, runErr.Error())
+	var attempts, maxAttempts int
+	err := p.db.QueryRowContext(ctx, "SELECT attempts, max_attempts FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&attempts, &maxAttempts)
+	if err != nil {
+		return err
+	}
+
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	if attempts+1 < maxAttempts {
+		delaySec := (1 << uint(attempts)) * 10
+		if delaySec > 3600 {
+			delaySec = 3600
+		}
+		// Deterministic jitter using execution nanoseconds to keep imports minimal
+		jitterSec := time.Now().Nanosecond() % 3
+		nextRun := time.Now().Add(time.Duration(delaySec+jitterSec) * time.Second)
+
+		query := `
+			UPDATE runiq_jobs
+			SET status = 'pending', attempts = attempts + 1, run_at = $2, error_message = $3, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
+			WHERE job_id = $1`
+		_, err = p.db.ExecContext(ctx, query, jobID, nextRun, runErr.Error())
+	} else {
+		query := `
+			UPDATE runiq_jobs
+			SET status = 'failed', error_message = $2, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
+			WHERE job_id = $1`
+		_, err = p.db.ExecContext(ctx, query, jobID, runErr.Error())
+	}
 	return err
+}
+
+// PollScheduled is a no-op for PostgreSQL since Dequeue filters by run_at natively.
+func (p *PostgresStorage) PollScheduled(ctx context.Context, queue string) error {
+	return nil
 }
 
 func createJobsTable(ctx context.Context, db *sql.DB) error {
@@ -85,11 +126,16 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		span_id VARCHAR(255) DEFAULT '',
 		status VARCHAR(50) NOT NULL DEFAULT 'pending',
 		attempts INT DEFAULT 0,
+		max_attempts INT DEFAULT 3,
 		error_message TEXT DEFAULT '',
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-		locked_at TIMESTAMP WITH TIME ZONE
-	);`
+		locked_at TIMESTAMP WITH TIME ZONE,
+		run_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
+	ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS max_attempts INT DEFAULT 3;
+	ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS run_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+	`
 	_, err := db.ExecContext(ctx, schema)
 	return err
 }

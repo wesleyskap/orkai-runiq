@@ -58,6 +58,23 @@ func (w *WorkerPool) Register(name string, job Job) {
 // Start spawns workers and begins consuming from specified queues.
 func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
 	sem := make(chan struct{}, w.concurrency)
+
+	// Start scheduled jobs poller goroutine
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for _, q := range queues {
+					_ = w.storage.PollScheduled(ctx, q)
+				}
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():

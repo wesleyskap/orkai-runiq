@@ -17,6 +17,9 @@ type JobEnvelope struct {
 	Queue        string       `json:"queue"`
 	Name         string       `json:"name"`
 	Args         []byte       `json:"args"`
+	Attempts     int          `json:"attempts"`
+	MaxAttempts  int          `json:"max_attempts"`
+	RunAt        *time.Time   `json:"run_at,omitempty"`
 	TraceContext TraceContext `json:"trace_context"`
 }
 
@@ -76,6 +79,11 @@ type Storage interface {
 	// Usage example:
 	//	stats, err := storage.GetStats(ctx)
 	GetStats(ctx context.Context) (*Stats, error)
+
+	// PollScheduled moves scheduled jobs that are due into the active queue list.
+	// Usage example:
+	//	err := storage.PollScheduled(ctx, "default")
+	PollScheduled(ctx context.Context, queue string) error
 }
 
 // Job defines the contract that every background task must implement.
