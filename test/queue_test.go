@@ -12,6 +12,8 @@ import (
 // FakeStorage implements queue.Storage interface for testing purposes.
 type FakeStorage struct {
 	Enqueued []*queue.JobEnvelope
+	Acked    []string
+	Failed   map[string]error
 }
 
 func (f *FakeStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -29,10 +31,15 @@ func (f *FakeStorage) Dequeue(ctx context.Context, queueName string) (*queue.Job
 }
 
 func (f *FakeStorage) Ack(ctx context.Context, jobID string) error {
+	f.Acked = append(f.Acked, jobID)
 	return nil
 }
 
 func (f *FakeStorage) Fail(ctx context.Context, jobID string, err error) error {
+	if f.Failed == nil {
+		f.Failed = make(map[string]error)
+	}
+	f.Failed[jobID] = err
 	return nil
 }
 

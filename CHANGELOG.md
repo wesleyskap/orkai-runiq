@@ -2,6 +2,14 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [0.3.0] - 2026-05-19
+
+### Added
+- Client driver (`queue.Client`) supporting functional options, dynamic job enqueuing, and automatic Trace ID extraction.
+- Worker Pool processor (`queue.WorkerPool`) utilizing a buffered channel semaphore for concurrency limits, trace context restoration, and robust panic recovery.
+- Pluggable telemetry boundaries (`queue.Logger` and `queue.Tracer` interfaces) with fallback No-Op implementations.
+- Test coverage in `test/worker_test.go` verifying Trace extraction, Worker execution, context propagation, and panic resilience.
+
 ## [0.2.0] - 2026-05-19
 
 ### Added

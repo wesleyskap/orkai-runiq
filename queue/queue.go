@@ -1,6 +1,9 @@
 package queue
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // TraceContext encapsulates tracing correlation metadata from orkai-observability.
 type TraceContext struct {
@@ -47,3 +50,30 @@ type Job interface {
 	//	err := emailJob.Perform(ctx, args)
 	Perform(ctx context.Context, args []byte) error
 }
+
+// Logger defines pluggable logging interfaces for Runiq.
+type Logger interface {
+	Info(ctx context.Context, msg string, keysAndValues ...interface{})
+	Error(ctx context.Context, msg string, err error, keysAndValues ...interface{})
+}
+
+// Tracer defines pluggable telemetry and trace-context propagation boundaries.
+type Tracer interface {
+	ExtractTrace(ctx context.Context) (traceID, spanID string)
+	InjectTrace(ctx context.Context, traceID, spanID string) context.Context
+	RecordLatency(ctx context.Context, name string, duration time.Duration, tags map[string]string)
+	IncrementCounter(ctx context.Context, name string, tags map[string]string)
+}
+
+type defaultLogger struct{}
+
+func (d *defaultLogger) Info(ctx context.Context, msg string, keysAndValues ...interface{}) {}
+func (d *defaultLogger) Error(ctx context.Context, msg string, err error, keysAndValues ...interface{}) {}
+
+type defaultTracer struct{}
+
+func (d *defaultTracer) ExtractTrace(ctx context.Context) (string, string) { return "", "" }
+func (d *defaultTracer) InjectTrace(ctx context.Context, traceID, spanID string) context.Context { return ctx }
+func (d *defaultTracer) RecordLatency(ctx context.Context, name string, duration time.Duration, tags map[string]string) {}
+func (d *defaultTracer) IncrementCounter(ctx context.Context, name string, tags map[string]string) {}
+
