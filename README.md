@@ -160,6 +160,17 @@ envelope := &queue.JobEnvelope{
 err := storage.Enqueue(ctx, envelope)
 ```
 
+Additionally, you can use the client helpers `EnqueueIn` (to execute a task after a duration) and `EnqueueAt` (to execute a task at a specific time):
+
+```go
+// Enqueue job to run in 10 minutes
+err := client.EnqueueIn(ctx, "default", "SendEmail", []byte(`{"to":"user@example.com"}`), 10*time.Minute)
+
+// Enqueue job to run at a specific timestamp
+targetTime := time.Now().Add(2 * time.Hour)
+err = client.EnqueueAt(ctx, "default", "SendEmail", []byte(`{"to":"user@example.com"}`), targetTime)
+```
+
 ## Telemetry Integration
 
 Runiq defines telemetry boundaries using simple, pluggable interfaces. By default, it falls back to Go standard library logging (slog/log) and skips metrics recording. Integration with external telemetry engines (like orkai-observability) can be enabled by supplying custom implementations of logging and tracing interfaces.

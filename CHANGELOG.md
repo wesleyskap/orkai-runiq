@@ -2,6 +2,12 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [0.8.0] - 2026-05-19
+
+### Added
+- New client helper methods `EnqueueIn` (executes job after delay) and `EnqueueAt` (executes job at a specific timestamp).
+- Test coverage for client scheduling helpers in `test/worker_test.go`.
+
 ## [0.7.0] - 2026-05-19
 
 ### Added

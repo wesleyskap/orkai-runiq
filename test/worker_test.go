@@ -161,3 +161,53 @@ func TestWorkerPoolPanicRecovery(t *testing.T) {
 		t.Error("expected job-panic to be marked as failed in storage")
 	}
 }
+
+// TestClientScheduling verifies Client scheduling (EnqueueIn and EnqueueAt) behavior.
+func TestClientScheduling(t *testing.T) {
+	fakeStore := &FakeStorage{}
+	client := queue.NewClient(fakeStore)
+	ctx := context.Background()
+
+	// 1. Test EnqueueIn
+	delay := 10 * time.Minute
+	nowBefore := time.Now()
+	err := client.EnqueueIn(ctx, "default", "ScheduledJob", []byte("{}"), delay)
+	if err != nil {
+		t.Fatalf("failed to EnqueueIn: %v", err)
+	}
+
+	if len(fakeStore.Enqueued) != 1 {
+		t.Fatalf("expected 1 job enqueued, got %d", len(fakeStore.Enqueued))
+	}
+
+	env := fakeStore.Enqueued[0]
+	if env.RunAt == nil {
+		t.Fatal("expected RunAt to be set")
+	}
+
+	expectedTime := nowBefore.Add(delay)
+	diff := env.RunAt.Sub(expectedTime)
+	if diff < -5*time.Second || diff > 5*time.Second {
+		t.Errorf("expected RunAt to be around %v, got %v", expectedTime, *env.RunAt)
+	}
+
+	// 2. Test EnqueueAt
+	targetTime := time.Now().Add(1 * time.Hour)
+	err = client.EnqueueAt(ctx, "default", "ScheduledJobAt", []byte("{}"), targetTime)
+	if err != nil {
+		t.Fatalf("failed to EnqueueAt: %v", err)
+	}
+
+	if len(fakeStore.Enqueued) != 2 {
+		t.Fatalf("expected 2 jobs enqueued, got %d", len(fakeStore.Enqueued))
+	}
+
+	envAt := fakeStore.Enqueued[1]
+	if envAt.RunAt == nil {
+		t.Fatal("expected RunAt to be set")
+	}
+	if !envAt.RunAt.Equal(targetTime) {
+		t.Errorf("expected RunAt to be %v, got %v", targetTime, *envAt.RunAt)
+	}
+}
+

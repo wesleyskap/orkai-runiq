@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"time"
 )
 
 // Client enqueues background jobs.
@@ -40,10 +41,35 @@ func WithClientTracer(t Tracer) ClientOption {
 func (c *Client) Enqueue(ctx context.Context, queueName, name string, args []byte) error {
 	traceID, spanID := c.tracer.ExtractTrace(ctx)
 	env := &JobEnvelope{
-		JobID: generateJobID(),
-		Queue: queueName,
-		Name:  name,
-		Args:  args,
+		JobID:       generateJobID(),
+		Queue:       queueName,
+		Name:        name,
+		Args:        args,
+		MaxAttempts: 3,
+		TraceContext: TraceContext{
+			TraceID: traceID,
+			SpanID:  spanID,
+		},
+	}
+	return c.storage.Enqueue(ctx, env)
+}
+
+// EnqueueIn schedules a job to be executed after a duration delay.
+func (c *Client) EnqueueIn(ctx context.Context, queueName, name string, args []byte, delay time.Duration) error {
+	runAt := time.Now().Add(delay)
+	return c.EnqueueAt(ctx, queueName, name, args, runAt)
+}
+
+// EnqueueAt schedules a job to be executed at a specific time.
+func (c *Client) EnqueueAt(ctx context.Context, queueName, name string, args []byte, runAt time.Time) error {
+	traceID, spanID := c.tracer.ExtractTrace(ctx)
+	env := &JobEnvelope{
+		JobID:       generateJobID(),
+		Queue:       queueName,
+		Name:        name,
+		Args:        args,
+		RunAt:       &runAt,
+		MaxAttempts: 3,
 		TraceContext: TraceContext{
 			TraceID: traceID,
 			SpanID:  spanID,
