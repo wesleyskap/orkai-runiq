@@ -263,7 +263,75 @@
                 box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
             }
         }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-family: inherit;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.3rem 0.65rem;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+        }
+
+        .btn-primary {
+            background: rgba(99, 102, 241, 0.15);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            color: #a5b4fc;
+        }
+
+        .btn-primary:hover {
+            background: rgba(99, 102, 241, 0.25);
+            border-color: rgba(99, 102, 241, 0.6);
+            color: #fff;
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #f87171;
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.25);
+            border-color: rgba(239, 68, 68, 0.6);
+            color: #fff;
+        }
+
+        .btn-warning {
+            background: rgba(245, 158, 11, 0.15);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            color: #fbbf24;
+        }
+
+        .btn-warning:hover {
+            background: rgba(245, 158, 11, 0.25);
+            border-color: rgba(245, 158, 11, 0.6);
+            color: #fff;
+        }
+
+        .actions-cell {
+            display: flex;
+            gap: 0.4rem;
+        }
+
+        .chart-container {
+            background: rgba(30, 41, 59, 0.4);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 1.2rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
+        }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <header>
@@ -272,7 +340,7 @@
             <div style="display: flex; align-items: center; font-size: 0.875rem; color: var(--text-muted);">
                 <span class="pulse"></span> Live
             </div>
-            <span class="badge">v0.5.0</span>
+            <span class="badge">v0.8.0</span>
         </div>
     </header>
 
@@ -296,6 +364,13 @@
             </div>
         </div>
 
+        <div class="chart-container">
+            <div class="table-header">Performance Metrics (Real-Time)</div>
+            <div style="position: relative; height: 180px; width: 100%;">
+                <canvas id="performance-chart"></canvas>
+            </div>
+        </div>
+
         <div class="table-container">
             <div class="table-header">Queues Activity</div>
             <table id="queues-table">
@@ -306,6 +381,7 @@
                         <th>Active</th>
                         <th>Processed</th>
                         <th>Failed</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="queues-list">
@@ -314,6 +390,26 @@
             </table>
             <div id="no-queues" class="empty-state" style="display: none;">
                 No active queues discovered yet.
+            </div>
+        </div>
+
+        <div class="table-container">
+            <div class="table-header">Active Processes (Workers)</div>
+            <table id="processes-table">
+                <thead>
+                    <tr>
+                        <th>Process ID</th>
+                        <th>Concurrency</th>
+                        <th>Monitored Queues</th>
+                        <th>Last Heartbeat</th>
+                    </tr>
+                </thead>
+                <tbody id="processes-list">
+                    <!-- Dynamic Rows -->
+                </tbody>
+            </table>
+            <div id="no-processes" class="empty-state" style="display: none;">
+                No active worker processes registered.
             </div>
         </div>
 
@@ -332,6 +428,7 @@
                         <th>Job Name</th>
                         <th>Trace ID</th>
                         <th id="th-extra" style="display: none;">Details</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="jobs-list">
@@ -347,6 +444,66 @@
     <script>
         let activeTab = 'pending';
         let latestJobs = [];
+
+        let chart = null;
+        let chartLabels = [];
+        let throughputData = [];
+        let errorRateData = [];
+        let lastProcessed = null;
+        let lastFailed = null;
+        let lastTimestamp = null;
+
+        function initChart() {
+            const canvas = document.getElementById('performance-chart');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartLabels,
+                    datasets: [
+                        {
+                            label: 'Throughput (jobs/s)',
+                            data: throughputData,
+                            borderColor: 'rgba(99, 102, 241, 0.8)',
+                            backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            fill: true
+                        },
+                        {
+                            label: 'Errors (errors/s)',
+                            data: errorRateData,
+                            borderColor: 'rgba(239, 68, 68, 0.8)',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            fill: true
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            ticks: { color: '#94a3b8', font: { size: 10 } }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            ticks: { color: '#94a3b8', font: { size: 10 } },
+                            beginAtZero: true
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: { color: '#f1f5f9', font: { size: 11 } }
+                        }
+                    }
+                }
+            });
+        }
 
         function switchTab(tab) {
             activeTab = tab;
@@ -395,15 +552,62 @@
                 if (activeTab === 'failed') {
                     extraTd = `<td><div class="error-msg">${j.error_message || 'Unknown error'}</div></td>`;
                 }
+                let actionsHtml = '';
+                if (activeTab === 'pending' || activeTab === 'running') {
+                    actionsHtml = `<button class="btn btn-danger" onclick="cancelJob('${j.job_id}')">Cancel</button>`;
+                } else if (activeTab === 'failed') {
+                    actionsHtml = `
+                        <div class="actions-cell">
+                            <button class="btn btn-primary" onclick="retryJob('${j.job_id}')">Retry</button>
+                            <button class="btn btn-danger" onclick="cancelJob('${j.job_id}')">Cancel</button>
+                        </div>
+                    `;
+                } else {
+                    actionsHtml = `<span style="color: var(--text-muted); font-size: 0.85rem;">None</span>`;
+                }
                 tr.innerHTML = `
                     <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${j.job_id}</td>
                     <td style="font-weight: 600;">${j.queue}</td>
                     <td>${j.name}</td>
                     <td><span class="trace-id">${j.trace_id || 'N/A'}</span></td>
                     ${extraTd}
+                    <td>${actionsHtml}</td>
                 `;
                 tbody.appendChild(tr);
             });
+        }
+
+        async function retryJob(jobId) {
+            if (!confirm(`Are you sure you want to retry job ${jobId}?`)) return;
+            try {
+                const res = await fetch(`/api/jobs/retry?id=${jobId}`, { method: 'POST' });
+                if (!res.ok) throw new Error('Failed to retry job');
+                fetchStats();
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        async function cancelJob(jobId) {
+            if (!confirm(`Are you sure you want to cancel job ${jobId}?`)) return;
+            try {
+                const res = await fetch(`/api/jobs/cancel?id=${jobId}`, { method: 'POST' });
+                if (!res.ok) throw new Error('Failed to cancel job');
+                fetchStats();
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        async function clearQueue(queueName) {
+            if (!confirm(`Are you sure you want to clear all jobs in queue "${queueName}"?`)) return;
+            try {
+                const res = await fetch(`/api/queues/clear?name=${queueName}`, { method: 'POST' });
+                if (!res.ok) throw new Error('Failed to clear queue');
+                fetchStats();
+            } catch (err) {
+                alert(err.message);
+            }
         }
 
         async function fetchStats() {
@@ -417,6 +621,49 @@
                 document.getElementById('val-processed').innerText = data.processed || 0;
                 document.getElementById('val-failed').innerText = data.failed || 0;
 
+                const now = Date.now();
+                const totalProcessed = data.processed || 0;
+                const totalFailed = data.failed || 0;
+
+                if (lastProcessed !== null && lastTimestamp !== null) {
+                    const elapsedSec = (now - lastTimestamp) / 1000.0;
+                    if (elapsedSec > 0) {
+                        const processedDiff = Math.max(0, totalProcessed - lastProcessed);
+                        const failedDiff = Math.max(0, totalFailed - lastFailed);
+
+                        const throughput = Number((processedDiff / elapsedSec).toFixed(2));
+                        const errorRate = Number((failedDiff / elapsedSec).toFixed(2));
+
+                        const timeStr = new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                        chartLabels.push(timeStr);
+                        throughputData.push(throughput);
+                        errorRateData.push(errorRate);
+
+                        if (chartLabels.length > 15) {
+                            chartLabels.shift();
+                            throughputData.shift();
+                            errorRateData.shift();
+                        }
+
+                        if (!chart) {
+                            initChart();
+                        } else {
+                            chart.update();
+                        }
+                    }
+                } else {
+                    const timeStr = new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    chartLabels.push(timeStr);
+                    throughputData.push(0);
+                    errorRateData.push(0);
+                    initChart();
+                }
+
+                lastProcessed = totalProcessed;
+                lastFailed = totalFailed;
+                lastTimestamp = now;
+
                 const tbody = document.getElementById('queues-list');
                 const noQueues = document.getElementById('no-queues');
                 const table = document.getElementById('queues-table');
@@ -426,23 +673,53 @@
                 if (!data.queues || data.queues.length === 0) {
                     table.style.display = 'none';
                     noQueues.style.display = 'block';
-                    return;
+                } else {
+                    table.style.display = 'table';
+                    noQueues.style.display = 'none';
+
+                    data.queues.forEach(q => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td style="font-weight: 600;">${q.name}</td>
+                            <td style="color: var(--pending);">${q.pending}</td>
+                            <td style="color: var(--running);">${q.running}</td>
+                            <td style="color: var(--running);">${q.processed || 0}</td>
+                            <td style="color: var(--failed);">${q.failed}</td>
+                            <td>
+                                <button class="btn btn-warning" onclick="clearQueue('${q.name}')">Clear</button>
+                            </td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
                 }
 
-                table.style.display = 'table';
-                noQueues.style.display = 'none';
-
-                data.queues.forEach(q => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td style="font-weight: 600;">${q.name}</td>
-                        <td style="color: var(--pending);">${q.pending}</td>
-                        <td style="color: var(--running);">${q.running}</td>
-                        <td style="color: var(--running);">${q.processed || 0}</td>
-                        <td style="color: var(--failed);">${q.failed}</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
+                // Render active processes
+                const processesTbody = document.getElementById('processes-list');
+                const noProcesses = document.getElementById('no-processes');
+                const processesTable = document.getElementById('processes-table');
+                
+                processesTbody.innerHTML = '';
+                
+                if (!data.processes || data.processes.length === 0) {
+                    processesTable.style.display = 'none';
+                    noProcesses.style.display = 'block';
+                } else {
+                    processesTable.style.display = 'table';
+                    noProcesses.style.display = 'none';
+                    
+                    data.processes.forEach(p => {
+                        const tr = document.createElement('tr');
+                        const hTime = new Date(p.heartbeat_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        const queuesStr = p.queues ? p.queues.join(', ') : 'None';
+                        tr.innerHTML = `
+                            <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${p.process_id}</td>
+                            <td style="font-weight: 600;">${p.concurrency}</td>
+                            <td>${queuesStr}</td>
+                            <td style="color: var(--running);">${hTime}</td>
+                        `;
+                        processesTbody.appendChild(tr);
+                    });
+                }
 
                 latestJobs = data.jobs || [];
                 renderJobs();

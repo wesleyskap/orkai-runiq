@@ -15,6 +15,11 @@ type FakeStorage struct {
 	Acked         []string
 	Failed        map[string]error
 	StatsToReturn *queue.Stats
+	Retried       []string
+	Cancelled     []string
+	Cleared       []string
+	Processes     []queue.ProcessInfo
+	Heartbeats    []string
 }
 
 func (f *FakeStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -53,6 +58,35 @@ func (f *FakeStorage) GetStats(ctx context.Context) (*queue.Stats, error) {
 
 func (f *FakeStorage) PollScheduled(ctx context.Context, queueName string) error {
 	return nil
+}
+
+func (f *FakeStorage) Retry(ctx context.Context, jobID string) error {
+	f.Retried = append(f.Retried, jobID)
+	return nil
+}
+
+func (f *FakeStorage) Cancel(ctx context.Context, jobID string) error {
+	f.Cancelled = append(f.Cancelled, jobID)
+	return nil
+}
+
+func (f *FakeStorage) ClearQueue(ctx context.Context, queue string) error {
+	f.Cleared = append(f.Cleared, queue)
+	return nil
+}
+
+func (f *FakeStorage) RegisterProcess(ctx context.Context, info *queue.ProcessInfo) error {
+	f.Processes = append(f.Processes, *info)
+	return nil
+}
+
+func (f *FakeStorage) HeartbeatProcess(ctx context.Context, processID string) error {
+	f.Heartbeats = append(f.Heartbeats, processID)
+	return nil
+}
+
+func (f *FakeStorage) GetActiveProcesses(ctx context.Context) ([]queue.ProcessInfo, error) {
+	return f.Processes, nil
 }
 
 // DummyJob implements queue.Job for verification.

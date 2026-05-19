@@ -2,8 +2,12 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrDuplicateJob is returned when a job with a unique key is already queued or running.
+var ErrDuplicateJob = errors.New("job with this unique key is already enqueued or running")
 
 // TraceContext encapsulates tracing correlation metadata from orkai-observability.
 type TraceContext struct {
@@ -13,14 +17,16 @@ type TraceContext struct {
 
 // JobEnvelope represents the raw job payload wrapper stored in PostgreSQL/Redis.
 type JobEnvelope struct {
-	JobID        string       `json:"job_id"`
-	Queue        string       `json:"queue"`
-	Name         string       `json:"name"`
-	Args         []byte       `json:"args"`
-	Attempts     int          `json:"attempts"`
-	MaxAttempts  int          `json:"max_attempts"`
-	RunAt        *time.Time   `json:"run_at,omitempty"`
-	TraceContext TraceContext `json:"trace_context"`
+	TraceContext TraceContext  `json:"trace_context"`
+	Args         []byte        `json:"args"`
+	JobID        string        `json:"job_id"`
+	Queue        string        `json:"queue"`
+	Name         string        `json:"name"`
+	UniqueKey    string        `json:"unique_key,omitempty"`
+	RunAt        *time.Time    `json:"run_at,omitempty"`
+	UniqueTTL    time.Duration `json:"unique_ttl,omitempty"`
+	Attempts     int           `json:"attempts"`
+	MaxAttempts  int           `json:"max_attempts"`
 }
 
 // JobDetail represents the serialized metadata for listing jobs in the dashboard.
@@ -34,6 +40,14 @@ type JobDetail struct {
 	CreatedAt    string `json:"created_at,omitempty"`
 }
 
+// ProcessInfo represents metadata of an active worker pool process.
+type ProcessInfo struct {
+	Queues      []string  `json:"queues"`
+	HeartbeatAt time.Time `json:"heartbeat_at"`
+	ProcessID   string    `json:"process_id"`
+	Concurrency int       `json:"concurrency"`
+}
+
 // QueueStats holds job counts grouped by queue.
 type QueueStats struct {
 	Name      string `json:"name"`
@@ -45,12 +59,13 @@ type QueueStats struct {
 
 // Stats holds aggregate and queue-specific job counts.
 type Stats struct {
-	Pending   int64        `json:"pending"`
-	Running   int64        `json:"running"`
-	Failed    int64        `json:"failed"`
-	Processed int64        `json:"processed"`
-	Queues    []QueueStats `json:"queues"`
-	Jobs      []JobDetail  `json:"jobs,omitempty"`
+	Queues    []QueueStats  `json:"queues"`
+	Jobs      []JobDetail   `json:"jobs,omitempty"`
+	Processes []ProcessInfo `json:"processes,omitempty"`
+	Pending   int64         `json:"pending"`
+	Running   int64         `json:"running"`
+	Failed    int64         `json:"failed"`
+	Processed int64         `json:"processed"`
 }
 
 // Storage defines the persistence engine interface for enqueuing and processing tasks.
@@ -84,6 +99,30 @@ type Storage interface {
 	// Usage example:
 	//	err := storage.PollScheduled(ctx, "default")
 	PollScheduled(ctx context.Context, queue string) error
+
+	// Retry resets a failed job back to pending state for re-execution.
+	// Usage example:
+	//	err := storage.Retry(ctx, "job-123")
+	Retry(ctx context.Context, jobID string) error
+
+	// Cancel deletes a pending, scheduled, or failed job from storage.
+	// Usage example:
+	//	err := storage.Cancel(ctx, "job-123")
+	Cancel(ctx context.Context, jobID string) error
+
+	// ClearQueue removes all jobs belonging to the specified queue.
+	// Usage example:
+	//	err := storage.ClearQueue(ctx, "default")
+	ClearQueue(ctx context.Context, queue string) error
+
+	// RegisterProcess registers a worker process with its monitored queues and concurrency limit.
+	RegisterProcess(ctx context.Context, info *ProcessInfo) error
+
+	// HeartbeatProcess updates the heartbeat timestamp of a worker process.
+	HeartbeatProcess(ctx context.Context, processID string) error
+
+	// GetActiveProcesses returns all active worker processes that have recently reported heartbeats.
+	GetActiveProcesses(ctx context.Context) ([]ProcessInfo, error)
 }
 
 // Job defines the contract that every background task must implement.

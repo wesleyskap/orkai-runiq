@@ -54,6 +54,18 @@ func TestPostgresStorageFlow(t *testing.T) {
 	t.Run("RetryFlowAndBackoff", func(t *testing.T) {
 		assertPostgresRetryFlow(t, ctx, storage, db)
 	})
+
+	t.Run("AdminActions", func(t *testing.T) {
+		assertPostgresAdminActions(t, ctx, storage, db)
+	})
+
+	t.Run("UniqueJobs", func(t *testing.T) {
+		assertPostgresUniqueJobs(t, ctx, storage, db)
+	})
+
+	t.Run("ActiveProcesses", func(t *testing.T) {
+		assertPostgresActiveProcesses(t, ctx, storage, db)
+	})
 }
 
 // TestRedisStorageFlow runs a sequence of tests asserting correct Redis storage driver behavior.
@@ -87,6 +99,18 @@ func TestRedisStorageFlow(t *testing.T) {
 
 	t.Run("RetryFlowAndBackoff", func(t *testing.T) {
 		assertRedisRetryFlow(t, ctx, storage, client)
+	})
+
+	t.Run("AdminActions", func(t *testing.T) {
+		assertRedisAdminActions(t, ctx, storage, client)
+	})
+
+	t.Run("UniqueJobs", func(t *testing.T) {
+		assertRedisUniqueJobs(t, ctx, storage, client)
+	})
+
+	t.Run("ActiveProcesses", func(t *testing.T) {
+		assertRedisActiveProcesses(t, ctx, storage, client)
 	})
 }
 
@@ -383,4 +407,281 @@ func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s queue.Storage,
 		t.Errorf("expected 1 failed job in stats, got %d", stats.Failed)
 	}
 }
+
+func assertPostgresAdminActions(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+	clearPostgresJobsTable(t, db)
+
+	env1 := &queue.JobEnvelope{
+		JobID: "job-p1",
+		Queue: "queue-p",
+		Name:  "TestJob",
+		Args:  []byte("{}"),
+	}
+	env2 := &queue.JobEnvelope{
+		JobID: "job-p2",
+		Queue: "queue-p",
+		Name:  "TestJob",
+		Args:  []byte("{}"),
+	}
+
+	_ = s.Enqueue(ctx, env1)
+	_ = s.Enqueue(ctx, env2)
+
+	// Test Cancel/Delete of job-p1
+	if err := s.Cancel(ctx, "job-p1"); err != nil {
+		t.Fatalf("failed to cancel job: %v", err)
+	}
+
+	// Verify job-p1 is deleted
+	var count int
+	_ = db.QueryRow("SELECT COUNT(*) FROM runiq_jobs WHERE job_id = $1", "job-p1").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected job-p1 to be deleted, found in db")
+	}
+
+	// Test Retry of job-p2 after failure
+	deq, _ := s.Dequeue(ctx, "queue-p")
+	_ = s.Fail(ctx, deq.JobID, fmt.Errorf("some failure"))
+
+	// Force to failed status
+	_, _ = db.Exec("UPDATE runiq_jobs SET status = 'failed' WHERE job_id = $1", "job-p2")
+
+	if err := s.Retry(ctx, "job-p2"); err != nil {
+		t.Fatalf("failed to retry job: %v", err)
+	}
+
+	var status string
+	var errMsg sql.NullString
+	_ = db.QueryRow("SELECT status, attempts, error_message FROM runiq_jobs WHERE job_id = $1", "job-p2").Scan(&status, &count, &errMsg)
+	if status != "pending" || count != 0 || errMsg.String != "" {
+		t.Errorf("expected status pending, attempts 0, empty error message; got status=%s, attempts=%d, err=%s", status, count, errMsg.String)
+	}
+
+	// Test ClearQueue
+	if err := s.ClearQueue(ctx, "queue-p"); err != nil {
+		t.Fatalf("failed to clear queue: %v", err)
+	}
+	_ = db.QueryRow("SELECT COUNT(*) FROM runiq_jobs WHERE queue = $1", "queue-p").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected queue-p to be cleared, got count %d", count)
+	}
+}
+
+func assertRedisAdminActions(t *testing.T, ctx context.Context, s queue.Storage, client *redis.Client) {
+	client.FlushAll(ctx)
+
+	env1 := &queue.JobEnvelope{
+		JobID: "job-r1",
+		Queue: "queue-r",
+		Name:  "TestJob",
+		Args:  []byte("{}"),
+	}
+	env2 := &queue.JobEnvelope{
+		JobID: "job-r2",
+		Queue: "queue-r",
+		Name:  "TestJob",
+		Args:  []byte("{}"),
+	}
+
+	_ = s.Enqueue(ctx, env1)
+	_ = s.Enqueue(ctx, env2)
+
+	// Test Cancel/Delete of job-r1
+	if err := s.Cancel(ctx, "job-r1"); err != nil {
+		t.Fatalf("failed to cancel job: %v", err)
+	}
+
+	// Verify job-r1 is deleted from jobs hash
+	hexists, _ := client.HExists(ctx, "runiq:jobs", "job-r1").Result()
+	if hexists {
+		t.Error("expected job-r1 to be deleted from jobs hash")
+	}
+
+	// Test Retry of job-r2 after failure
+	deq, _ := s.Dequeue(ctx, "queue-r")
+	_ = s.Fail(ctx, deq.JobID, fmt.Errorf("some failure"))
+
+	// Manually simulate job failed list
+	client.LPush(ctx, "runiq:failed:queue-r", "job-r2")
+	client.HSet(ctx, "runiq:errors", "job-r2", "some failure")
+
+	if err := s.Retry(ctx, "job-r2"); err != nil {
+		t.Fatalf("failed to retry job: %v", err)
+	}
+
+	// Verify it's removed from failed queue and errors, and added back to pending queue
+	failedLenAfter, _ := client.LRem(ctx, "runiq:failed:queue-r", 0, "job-r2").Result()
+	if failedLenAfter != 0 {
+		t.Error("expected job-r2 to be removed from failed queue")
+	}
+	errExists, _ := client.HExists(ctx, "runiq:errors", "job-r2").Result()
+	if errExists {
+		t.Error("expected job-r2 error to be deleted")
+	}
+	pendingLen, _ := client.LLen(ctx, "runiq:queue:queue-r").Result()
+	if pendingLen == 0 {
+		t.Error("expected job-r2 to be pushed back to pending list")
+	}
+
+	// Test ClearQueue
+	if err := s.ClearQueue(ctx, "queue-r"); err != nil {
+		t.Fatalf("failed to clear queue: %v", err)
+	}
+	pendingLen, _ = client.LLen(ctx, "runiq:queue:queue-r").Result()
+	if pendingLen != 0 {
+		t.Errorf("expected pending list to be cleared, got len %d", pendingLen)
+	}
+}
+
+func assertPostgresUniqueJobs(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+	clearPostgresJobsTable(t, db)
+	_, _ = db.Exec("DELETE FROM runiq_unique_locks")
+
+	env1 := &queue.JobEnvelope{
+		JobID:     "unique-job-p1",
+		Queue:     "unique-queue-p",
+		Name:      "TestJob",
+		Args:      []byte("{}"),
+		UniqueKey: "user-123",
+	}
+	env2 := &queue.JobEnvelope{
+		JobID:     "unique-job-p2",
+		Queue:     "unique-queue-p",
+		Name:      "TestJob",
+		Args:      []byte("{}"),
+		UniqueKey: "user-123",
+	}
+
+	if err := s.Enqueue(ctx, env1); err != nil {
+		t.Fatalf("first enqueue failed: %v", err)
+	}
+
+	err := s.Enqueue(ctx, env2)
+	if err != queue.ErrDuplicateJob {
+		t.Errorf("expected ErrDuplicateJob, got %v", err)
+	}
+
+	deq, err := s.Dequeue(ctx, "unique-queue-p")
+	if err != nil || deq == nil {
+		t.Fatalf("dequeue failed: %v", err)
+	}
+	if err := s.Ack(ctx, deq.JobID); err != nil {
+		t.Fatalf("ack failed: %v", err)
+	}
+
+	if err := s.Enqueue(ctx, env2); err != nil {
+		t.Errorf("second enqueue failed after ack: %v", err)
+	}
+}
+
+func assertRedisUniqueJobs(t *testing.T, ctx context.Context, s queue.Storage, client *redis.Client) {
+	client.FlushAll(ctx)
+
+	env1 := &queue.JobEnvelope{
+		JobID:     "unique-job-r1",
+		Queue:     "unique-queue-r",
+		Name:      "TestJob",
+		Args:      []byte("{}"),
+		UniqueKey: "user-123",
+	}
+	env2 := &queue.JobEnvelope{
+		JobID:     "unique-job-r2",
+		Queue:     "unique-queue-r",
+		Name:      "TestJob",
+		Args:      []byte("{}"),
+		UniqueKey: "user-123",
+	}
+
+	if err := s.Enqueue(ctx, env1); err != nil {
+		t.Fatalf("first enqueue failed: %v", err)
+	}
+
+	err := s.Enqueue(ctx, env2)
+	if err != queue.ErrDuplicateJob {
+		t.Errorf("expected ErrDuplicateJob, got %v", err)
+	}
+
+	deq, err := s.Dequeue(ctx, "unique-queue-r")
+	if err != nil || deq == nil {
+		t.Fatalf("dequeue failed: %v", err)
+	}
+	if err := s.Ack(ctx, deq.JobID); err != nil {
+		t.Fatalf("ack failed: %v", err)
+	}
+
+	if err := s.Enqueue(ctx, env2); err != nil {
+		t.Errorf("second enqueue failed after ack: %v", err)
+	}
+}
+
+func assertPostgresActiveProcesses(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+	_, _ = db.ExecContext(ctx, "DELETE FROM runiq_processes")
+
+	proc := &queue.ProcessInfo{
+		Queues:      []string{"default", "critical"},
+		HeartbeatAt: time.Now(),
+		ProcessID:   "proc-pg-1",
+		Concurrency: 10,
+	}
+
+	if err := s.RegisterProcess(ctx, proc); err != nil {
+		t.Fatalf("failed to register postgres process: %v", err)
+	}
+
+	active, err := s.GetActiveProcesses(ctx)
+	if err != nil {
+		t.Fatalf("failed to get active postgres processes: %v", err)
+	}
+	if len(active) != 1 || active[0].ProcessID != "proc-pg-1" {
+		t.Fatalf("expected 1 process 'proc-pg-1', got %v", active)
+	}
+
+	if err := s.HeartbeatProcess(ctx, "proc-pg-1"); err != nil {
+		t.Fatalf("failed to send heartbeat for postgres process: %v", err)
+	}
+
+	stats, err := s.GetStats(ctx)
+	if err != nil {
+		t.Fatalf("failed to get stats: %v", err)
+	}
+	if len(stats.Processes) != 1 || stats.Processes[0].ProcessID != "proc-pg-1" {
+		t.Errorf("expected process in stats, got %v", stats.Processes)
+	}
+}
+
+func assertRedisActiveProcesses(t *testing.T, ctx context.Context, s queue.Storage, client *redis.Client) {
+	client.Del(ctx, "runiq:processes", "runiq:processes:heartbeat")
+
+	proc := &queue.ProcessInfo{
+		Queues:      []string{"default", "critical"},
+		HeartbeatAt: time.Now(),
+		ProcessID:   "proc-redis-1",
+		Concurrency: 10,
+	}
+
+	if err := s.RegisterProcess(ctx, proc); err != nil {
+		t.Fatalf("failed to register redis process: %v", err)
+	}
+
+	active, err := s.GetActiveProcesses(ctx)
+	if err != nil {
+		t.Fatalf("failed to get active redis processes: %v", err)
+	}
+	if len(active) != 1 || active[0].ProcessID != "proc-redis-1" {
+		t.Fatalf("expected 1 process 'proc-redis-1', got %v", active)
+	}
+
+	if err := s.HeartbeatProcess(ctx, "proc-redis-1"); err != nil {
+		t.Fatalf("failed to send heartbeat for redis process: %v", err)
+	}
+
+	stats, err := s.GetStats(ctx)
+	if err != nil {
+		t.Fatalf("failed to get stats: %v", err)
+	}
+	if len(stats.Processes) != 1 || stats.Processes[0].ProcessID != "proc-redis-1" {
+		t.Errorf("expected process in stats, got %v", stats.Processes)
+	}
+}
+
 

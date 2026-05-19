@@ -2,6 +2,22 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [0.10.0] - 2026-05-19
+
+### Added
+- **Unique Jobs**: Uniqueness lock support in PostgreSQL and Redis storage backends using `UniqueKey` and `UniqueTTL` on job envelopes.
+- **Active Worker Pool Monitoring**: Background worker pool process registration and heartbeat mechanism updating every 5 seconds.
+- **Active Processes Panel**: Integrated processes dashboard panel in `index.html` to list active worker nodes, their concurrency limits, and monitored queues.
+- **Unit Test Coverage**: Added tests for process registration, worker heartbeats, unique lock validations, and OTel metric generation.
+
+## [0.9.0] - 2026-05-19
+
+### Added
+- Dashboard administrative endpoints (`POST /api/jobs/retry`, `POST /api/jobs/cancel`, `POST /api/queues/clear`).
+- Interactive Action buttons in the Dashboard UI for retrying failed jobs, canceling queued jobs, and clearing queues.
+- Extended `Storage` interface and implemented database methods (`Retry`, `Cancel`, `ClearQueue`) in PostgreSQL and Redis storage drivers.
+- Automated API server and storage driver test suites in `test/server_test.go` and `test/storage_test.go`.
+
 ## [0.8.0] - 2026-05-19
 
 ### Added

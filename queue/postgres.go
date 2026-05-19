@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
@@ -23,7 +24,6 @@ func NewPostgresStorage(db *sql.DB) (*PostgresStorage, error) {
 	return &PostgresStorage{db: db}, nil
 }
 
-// Enqueue persists a job envelope into PostgreSQL.
 func (p *PostgresStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
 	runAt := time.Now()
 	if env.RunAt != nil {
@@ -34,15 +34,66 @@ func (p *PostgresStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
 		maxAttempts = 3
 	}
 
+	if env.UniqueKey != "" {
+		lockKey := env.Queue + ":" + env.UniqueKey
+		ttl := env.UniqueTTL
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
+		}
+		expiresAt := time.Now().Add(ttl)
+
+		_, err := p.db.ExecContext(ctx, `
+			INSERT INTO runiq_unique_locks (lock_key, job_id, expires_at)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (lock_key) DO NOTHING`,
+			lockKey, env.JobID, expiresAt,
+		)
+		if err != nil {
+			return err
+		}
+
+		var existingJobID string
+		var existingExpiresAt time.Time
+		err = p.db.QueryRowContext(ctx, `
+			SELECT job_id, expires_at FROM runiq_unique_locks WHERE lock_key = $1`,
+			lockKey,
+		).Scan(&existingJobID, &existingExpiresAt)
+		if err != nil {
+			return err
+		}
+
+		if existingJobID != env.JobID {
+			var exists bool
+			_ = p.db.QueryRowContext(ctx, `
+				SELECT EXISTS(SELECT 1 FROM runiq_jobs WHERE job_id = $1)`,
+				existingJobID,
+			).Scan(&exists)
+
+			if time.Now().Before(existingExpiresAt) && exists {
+				return ErrDuplicateJob
+			}
+
+			_, err = p.db.ExecContext(ctx, `
+				INSERT INTO runiq_unique_locks (lock_key, job_id, expires_at)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (lock_key) DO UPDATE SET job_id = $2, expires_at = $3`,
+				lockKey, env.JobID, expiresAt,
+			)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	query := `
-		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status, attempts, max_attempts, run_at)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending', 0, $7, $8)
+		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status, attempts, max_attempts, run_at, unique_key)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending', 0, $7, $8, $9)
 		ON CONFLICT (job_id) DO UPDATE SET
-			status = 'pending', attempts = 0, max_attempts = $7, run_at = $8, updated_at = CURRENT_TIMESTAMP`
+			status = 'pending', attempts = 0, max_attempts = $7, run_at = $8, unique_key = $9, updated_at = CURRENT_TIMESTAMP`
 	_, err := p.db.ExecContext(ctx, query,
 		env.JobID, env.Queue, env.Name, env.Args,
 		env.TraceContext.TraceID, env.TraceContext.SpanID,
-		maxAttempts, runAt,
+		maxAttempts, runAt, env.UniqueKey,
 	)
 	return err
 }
@@ -58,10 +109,10 @@ func (p *PostgresStorage) Dequeue(ctx context.Context, queueName string) (*JobEn
 			ORDER BY created_at ASC
 			FOR UPDATE SKIP LOCKED LIMIT 1
 		)
-		RETURNING job_id, queue, name, args, trace_id, span_id, attempts, max_attempts`
+		RETURNING job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key`
 	row := p.db.QueryRowContext(ctx, query, queueName)
 	var env JobEnvelope
-	err := row.Scan(&env.JobID, &env.Queue, &env.Name, &env.Args, &env.TraceContext.TraceID, &env.TraceContext.SpanID, &env.Attempts, &env.MaxAttempts)
+	err := row.Scan(&env.JobID, &env.Queue, &env.Name, &env.Args, &env.TraceContext.TraceID, &env.TraceContext.SpanID, &env.Attempts, &env.MaxAttempts, &env.UniqueKey)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -70,14 +121,39 @@ func (p *PostgresStorage) Dequeue(ctx context.Context, queueName string) (*JobEn
 
 // Ack marks the job as processed on success.
 func (p *PostgresStorage) Ack(ctx context.Context, jobID string) error {
-	_, err := p.db.ExecContext(ctx, "UPDATE runiq_jobs SET status = 'processed', locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE job_id = $1", jobID)
-	return err
+	var uniqueKey, queueName string
+	err := p.db.QueryRowContext(ctx, "SELECT unique_key, queue FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&uniqueKey, &queueName)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, "UPDATE runiq_jobs SET status = 'processed', locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE job_id = $1", jobID)
+	if err != nil {
+		return err
+	}
+
+	if uniqueKey != "" {
+		lockKey := queueName + ":" + uniqueKey
+		_, err = tx.ExecContext(ctx, "DELETE FROM runiq_unique_locks WHERE lock_key = $1", lockKey)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 // Fail updates the status to failed and sets error details. If attempts < max_attempts, schedules a retry.
 func (p *PostgresStorage) Fail(ctx context.Context, jobID string, runErr error) error {
 	var attempts, maxAttempts int
-	err := p.db.QueryRowContext(ctx, "SELECT attempts, max_attempts FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&attempts, &maxAttempts)
+	var uniqueKey, queueName string
+	err := p.db.QueryRowContext(ctx, "SELECT attempts, max_attempts, unique_key, queue FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&attempts, &maxAttempts, &uniqueKey, &queueName)
 	if err != nil {
 		return err
 	}
@@ -85,6 +161,12 @@ func (p *PostgresStorage) Fail(ctx context.Context, jobID string, runErr error) 
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
 	if attempts+1 < maxAttempts {
 		delaySec := (1 << uint(attempts)) * 10
@@ -99,15 +181,29 @@ func (p *PostgresStorage) Fail(ctx context.Context, jobID string, runErr error) 
 			UPDATE runiq_jobs
 			SET status = 'pending', attempts = attempts + 1, run_at = $2, error_message = $3, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
 			WHERE job_id = $1`
-		_, err = p.db.ExecContext(ctx, query, jobID, nextRun, runErr.Error())
+		_, err = tx.ExecContext(ctx, query, jobID, nextRun, runErr.Error())
+		if err != nil {
+			return err
+		}
 	} else {
 		query := `
 			UPDATE runiq_jobs
 			SET status = 'failed', error_message = $2, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
 			WHERE job_id = $1`
-		_, err = p.db.ExecContext(ctx, query, jobID, runErr.Error())
+		_, err = tx.ExecContext(ctx, query, jobID, runErr.Error())
+		if err != nil {
+			return err
+		}
+
+		if uniqueKey != "" {
+			lockKey := queueName + ":" + uniqueKey
+			_, err = tx.ExecContext(ctx, "DELETE FROM runiq_unique_locks WHERE lock_key = $1", lockKey)
+			if err != nil {
+				return err
+			}
+		}
 	}
-	return err
+	return tx.Commit()
 }
 
 // PollScheduled is a no-op for PostgreSQL since Dequeue filters by run_at natively.
@@ -131,10 +227,25 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		locked_at TIMESTAMP WITH TIME ZONE,
-		run_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		run_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+		unique_key VARCHAR(255) DEFAULT ''
 	);
 	ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS max_attempts INT DEFAULT 3;
 	ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS run_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+	ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS unique_key VARCHAR(255) DEFAULT '';
+
+	CREATE TABLE IF NOT EXISTS runiq_unique_locks (
+		lock_key VARCHAR(255) PRIMARY KEY,
+		job_id VARCHAR(255) NOT NULL,
+		expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS runiq_processes (
+		process_id VARCHAR(255) PRIMARY KEY,
+		concurrency INT NOT NULL,
+		queues TEXT NOT NULL,
+		heartbeat_at TIMESTAMP WITH TIME ZONE NOT NULL
+	);
 	`
 	_, err := db.ExecContext(ctx, schema)
 	return err
@@ -190,6 +301,11 @@ func (p *PostgresStorage) GetStats(ctx context.Context) (*Stats, error) {
 		stats.Jobs = append(stats.Jobs, jd)
 	}
 
+	activeProcesses, err := p.GetActiveProcesses(ctx)
+	if err == nil {
+		stats.Processes = activeProcesses
+	}
+
 	return &stats, nil
 }
 
@@ -213,4 +329,110 @@ func (p *PostgresStorage) accumulateStats(stats *Stats, queueMap map[string]*Que
 		stats.Processed += count
 		qs.Processed += count
 	}
+}
+
+// Retry resets a failed job back to pending state for re-execution.
+func (p *PostgresStorage) Retry(ctx context.Context, jobID string) error {
+	query := `
+		UPDATE runiq_jobs
+		SET status = 'pending', attempts = 0, run_at = CURRENT_TIMESTAMP, error_message = ''
+		WHERE job_id = $1`
+	_, err := p.db.ExecContext(ctx, query, jobID)
+	return err
+}
+
+// Cancel deletes a pending, scheduled, or failed job from storage.
+func (p *PostgresStorage) Cancel(ctx context.Context, jobID string) error {
+	var uniqueKey, queueName string
+	err := p.db.QueryRowContext(ctx, "SELECT unique_key, queue FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&uniqueKey, &queueName)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, "DELETE FROM runiq_jobs WHERE job_id = $1", jobID)
+	if err != nil {
+		return err
+	}
+
+	if uniqueKey != "" {
+		lockKey := queueName + ":" + uniqueKey
+		_, err = tx.ExecContext(ctx, "DELETE FROM runiq_unique_locks WHERE lock_key = $1", lockKey)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ClearQueue removes all jobs belonging to the specified queue.
+func (p *PostgresStorage) ClearQueue(ctx context.Context, queue string) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, "DELETE FROM runiq_jobs WHERE queue = $1", queue)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, "DELETE FROM runiq_unique_locks WHERE lock_key LIKE $1", queue+":%")
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// RegisterProcess stores a worker process info in PostgreSQL.
+func (p *PostgresStorage) RegisterProcess(ctx context.Context, info *ProcessInfo) error {
+	queuesJSON, err := json.Marshal(info.Queues)
+	if err != nil {
+		return err
+	}
+	query := `
+		INSERT INTO runiq_processes (process_id, concurrency, queues, heartbeat_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (process_id) DO UPDATE SET
+			concurrency = $2, queues = $3, heartbeat_at = $4`
+	_, err = p.db.ExecContext(ctx, query, info.ProcessID, info.Concurrency, string(queuesJSON), info.HeartbeatAt)
+	return err
+}
+
+// HeartbeatProcess updates the process heartbeat timestamp in PostgreSQL.
+func (p *PostgresStorage) HeartbeatProcess(ctx context.Context, processID string) error {
+	query := `UPDATE runiq_processes SET heartbeat_at = $2 WHERE process_id = $1`
+	_, err := p.db.ExecContext(ctx, query, processID, time.Now())
+	return err
+}
+
+// GetActiveProcesses prunes dead processes and returns active ones from PostgreSQL.
+func (p *PostgresStorage) GetActiveProcesses(ctx context.Context) ([]ProcessInfo, error) {
+	deadTimeLimit := time.Now().Add(-15 * time.Second)
+	_, _ = p.db.ExecContext(ctx, "DELETE FROM runiq_processes WHERE heartbeat_at < $1", deadTimeLimit)
+
+	rows, err := p.db.QueryContext(ctx, "SELECT process_id, concurrency, queues, heartbeat_at FROM runiq_processes ORDER BY heartbeat_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var processes []ProcessInfo
+	for rows.Next() {
+		var info ProcessInfo
+		var queuesJSON string
+		if err := rows.Scan(&info.ProcessID, &info.Concurrency, &queuesJSON, &info.HeartbeatAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(queuesJSON), &info.Queues)
+		processes = append(processes, info)
+	}
+	return processes, nil
 }

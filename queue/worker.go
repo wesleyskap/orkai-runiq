@@ -4,28 +4,38 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 )
 
 // WorkerPool processes jobs concurrently from the storage backend.
 type WorkerPool struct {
 	storage     Storage
-	concurrency int
 	logger      Logger
 	tracer      Tracer
+	processID   string
 	registry    map[string]Job
+	concurrency int
 }
 
 // NewWorkerPool instantiates a new WorkerPool.
 // Usage example:
 //	pool := queue.NewWorkerPool(storage, 5, queue.WithWorkerLogger(logger))
 func NewWorkerPool(storage Storage, concurrency int, opts ...WorkerOption) *WorkerPool {
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "unknown"
+	}
+	pid := os.Getpid()
+	processID := fmt.Sprintf("%s:%d:%d", hostname, pid, time.Now().UnixNano()%100000)
+
 	w := &WorkerPool{
 		storage:     storage,
-		concurrency: concurrency,
 		logger:      &defaultLogger{},
 		tracer:      &defaultTracer{},
+		processID:   processID,
 		registry:    make(map[string]Job),
+		concurrency: concurrency,
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -57,6 +67,30 @@ func (w *WorkerPool) Register(name string, job Job) {
 
 // Start spawns workers and begins consuming from specified queues.
 func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
+	info := &ProcessInfo{
+		Queues:      queues,
+		HeartbeatAt: time.Now(),
+		ProcessID:   w.processID,
+		Concurrency: w.concurrency,
+	}
+	if err := w.storage.RegisterProcess(ctx, info); err != nil {
+		w.logger.Error(ctx, "failed to register worker process", err)
+	}
+
+	// Start process heartbeat goroutine
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = w.storage.HeartbeatProcess(ctx, w.processID)
+			}
+		}
+	}()
+
 	sem := make(chan struct{}, w.concurrency)
 
 	// Start scheduled jobs poller goroutine

@@ -171,6 +171,38 @@ targetTime := time.Now().Add(2 * time.Hour)
 err = client.EnqueueAt(ctx, "default", "SendEmail", []byte(`{"to":"user@example.com"}`), targetTime)
 ```
 
+## Unique Jobs
+
+Runiq supports unique jobs to prevent enqueuing duplicate tasks while another instance is still pending or processing. You can set the `UniqueKey` and `UniqueTTL` fields:
+
+```go
+envelope := &queue.JobEnvelope{
+	JobID:     "unique-job-123",
+	Queue:     "default",
+	Name:      "SendEmail",
+	Args:      []byte(`{"to":"user@example.com"}`),
+	UniqueKey: "user-email-123",            // The uniqueness lock key
+	UniqueTTL: 10 * time.Minute,             // Uniqueness lock duration
+}
+err := storage.Enqueue(ctx, envelope) // Returns queue.ErrDuplicateJob if a lock already exists
+```
+
+Locks are automatically released when the job completes successfully (`Ack`), fails permanently (exceeds maximum attempts), or is explicitly cancelled via the dashboard or API.
+
+## Active Worker Pool Monitoring
+
+When a `WorkerPool` starts, it automatically registers itself with the storage driver using a unique process identifier (comprising the hostname, PID, and a random token). The worker pool then maintains a periodic background heartbeat ticker (every 5 seconds) to signal its health.
+
+The dashboard UI automatically aggregates these worker heartbeats and renders them in the **Active Processes (Workers)** panel, listing all active processes, their concurrency configurations, and their monitored queues. Dead workers are automatically pruned after 15 seconds of inactivity.
+
+## Administration API & Dashboard Actions
+
+Runiq's dashboard contains interactive buttons to manage tasks directly. The server exposes the following endpoints:
+
+* **Retry Job**: `POST /api/jobs/retry?id=<job_id>` resets the attempts counter and schedules a failed job for immediate retry.
+* **Cancel Job**: `POST /api/jobs/cancel?id=<job_id>` deletes a pending, scheduled, or failed job from the queue.
+* **Clear Queue**: `POST /api/queues/clear?name=<queue_name>` removes all pending, active, scheduled, completed, and failed jobs from a specific queue.
+
 ## Telemetry Integration
 
 Runiq defines telemetry boundaries using simple, pluggable interfaces. By default, it falls back to Go standard library logging (slog/log) and skips metrics recording. Integration with external telemetry engines (like orkai-observability) can be enabled by supplying custom implementations of logging and tracing interfaces.

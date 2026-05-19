@@ -211,3 +211,31 @@ func TestClientScheduling(t *testing.T) {
 	}
 }
 
+// TestWorkerProcessRegistration verifies that starting the worker pool registers the process and starts sending heartbeats.
+func TestWorkerProcessRegistration(t *testing.T) {
+	fakeStore := &FakeStorage{}
+	pool := queue.NewWorkerPool(fakeStore, 4)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = pool.Start(ctx, "critical", "default")
+	}()
+
+	// Wait for worker pool to execute startup registration
+	time.Sleep(50 * time.Millisecond)
+
+	if len(fakeStore.Processes) != 1 {
+		t.Fatalf("expected 1 process registered, got %d", len(fakeStore.Processes))
+	}
+
+	p := fakeStore.Processes[0]
+	if p.Concurrency != 4 {
+		t.Errorf("expected concurrency 4, got %d", p.Concurrency)
+	}
+	if len(p.Queues) != 2 || p.Queues[0] != "critical" || p.Queues[1] != "default" {
+		t.Errorf("expected queues ['critical', 'default'], got %v", p.Queues)
+	}
+}
+

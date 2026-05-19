@@ -37,6 +37,9 @@ func NewServer(storage Storage, port string) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/stats", s.handleStats)
+	mux.HandleFunc("/api/jobs/retry", s.handleRetry)
+	mux.HandleFunc("/api/jobs/cancel", s.handleCancel)
+	mux.HandleFunc("/api/queues/clear", s.handleClearQueue)
 
 	sub, err := fs.Sub(assetsFS, "assets")
 	if err != nil {
@@ -68,4 +71,55 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stats)
+}
+
+func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	jobID := r.URL.Query().Get("id")
+	if jobID == "" {
+		http.Error(w, "Missing job id parameter", http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.Retry(r.Context(), jobID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	jobID := r.URL.Query().Get("id")
+	if jobID == "" {
+		http.Error(w, "Missing job id parameter", http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.Cancel(r.Context(), jobID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleClearQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	queueName := r.URL.Query().Get("name")
+	if queueName == "" {
+		http.Error(w, "Missing queue name parameter", http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.ClearQueue(r.Context(), queueName); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
