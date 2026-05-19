@@ -195,6 +195,23 @@ When a `WorkerPool` starts, it automatically registers itself with the storage d
 
 The dashboard UI automatically aggregates these worker heartbeats and renders them in the **Active Processes (Workers)** panel, listing all active processes, their concurrency configurations, and their monitored queues. Dead workers are automatically pruned after 15 seconds of inactivity.
 
+## Weighted Queues
+
+By default, workers poll queues in strict linear priority (the order in which queues are passed to `Start`). To avoid starvation of lower priority queues, Runiq allows you to configure relative weights using the `WithQueueWeights` option:
+
+```go
+pool := queue.NewWorkerPool(
+	storage, 
+	5, 
+	queue.WithQueueWeights(map[string]int{
+		"critical": 3,
+		"default":  1,
+	}),
+)
+```
+
+In the example above, `critical` has a weight of 3 and `default` has a weight of 1. During job fetches, the worker pool cycles search preference (yielding a 3:1 ratio of preference), ensuring that the `default` queue is checked first 25% of the time, while still polling all monitored queues to guarantee zero throughput lag.
+
 ## Administration API & Dashboard Actions
 
 Runiq's dashboard contains interactive buttons to manage tasks directly. The server exposes the following endpoints:

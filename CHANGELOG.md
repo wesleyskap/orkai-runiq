@@ -2,6 +2,12 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [0.11.0] - 2026-05-19
+
+### Added
+- **Weighted Queues**: Queue prioritization support in `WorkerPool` using relative weights (via `WithQueueWeights`). Cycles search preference dynamically to prevent lower priority queue starvation.
+- **Unit Test Coverage**: Added tests verifying search order rotation with custom weights and fallback to strict linear sequence.
+
 ## [0.10.0] - 2026-05-19
 
 ### Added

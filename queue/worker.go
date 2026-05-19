@@ -5,17 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
 // WorkerPool processes jobs concurrently from the storage backend.
 type WorkerPool struct {
-	storage     Storage
-	logger      Logger
-	tracer      Tracer
-	processID   string
-	registry    map[string]Job
-	concurrency int
+	firstQueues  []string
+	storage      Storage
+	logger       Logger
+	tracer       Tracer
+	processID    string
+	registry     map[string]Job
+	weights      map[string]int
+	concurrency  int
+	fetchCounter uint64
 }
 
 // NewWorkerPool instantiates a new WorkerPool.
@@ -35,6 +39,7 @@ func NewWorkerPool(storage Storage, concurrency int, opts ...WorkerOption) *Work
 		tracer:      &defaultTracer{},
 		processID:   processID,
 		registry:    make(map[string]Job),
+		weights:     make(map[string]int),
 		concurrency: concurrency,
 	}
 	for _, opt := range opts {
@@ -60,6 +65,13 @@ func WithWorkerLogger(l Logger) WorkerOption {
 	}
 }
 
+// WithQueueWeights configures the relative execution weight for each queue.
+func WithQueueWeights(weights map[string]int) WorkerOption {
+	return func(w *WorkerPool) {
+		w.weights = weights
+	}
+}
+
 // Register maps a job name to a Job implementation.
 func (w *WorkerPool) Register(name string, job Job) {
 	w.registry[name] = job
@@ -67,6 +79,20 @@ func (w *WorkerPool) Register(name string, job Job) {
 
 // Start spawns workers and begins consuming from specified queues.
 func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
+	if len(w.weights) > 0 {
+		var fqs []string
+		for _, q := range queues {
+			wt := 1
+			if val, ok := w.weights[q]; ok && val > 0 {
+				wt = val
+			}
+			for i := 0; i < wt; i++ {
+				fqs = append(fqs, q)
+			}
+		}
+		w.firstQueues = fqs
+	}
+
 	info := &ProcessInfo{
 		Queues:      queues,
 		HeartbeatAt: time.Now(),
@@ -139,6 +165,33 @@ func (w *WorkerPool) runJobWithSemaphore(ctx context.Context, sem chan struct{},
 }
 
 func (w *WorkerPool) fetchNext(ctx context.Context, queues []string) (*JobEnvelope, error) {
+	if len(w.firstQueues) > 0 {
+		searchOrder := w.buildSearchOrder(queues)
+		for _, q := range searchOrder {
+			env, err := w.storage.Dequeue(ctx, q)
+			if err == nil && env != nil {
+				return env, nil
+			}
+		}
+		return nil, nil
+	}
+	return w.fetchStrict(ctx, queues)
+}
+
+func (w *WorkerPool) buildSearchOrder(queues []string) []string {
+	idx := int((atomic.AddUint64(&w.fetchCounter, 1) - 1) % uint64(len(w.firstQueues)))
+	primary := w.firstQueues[idx]
+	order := make([]string, 0, len(queues))
+	order = append(order, primary)
+	for _, q := range queues {
+		if q != primary {
+			order = append(order, q)
+		}
+	}
+	return order
+}
+
+func (w *WorkerPool) fetchStrict(ctx context.Context, queues []string) (*JobEnvelope, error) {
 	for _, q := range queues {
 		env, err := w.storage.Dequeue(ctx, q)
 		if err == nil && env != nil {
