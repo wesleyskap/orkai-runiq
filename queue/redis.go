@@ -53,17 +53,50 @@ func (r *RedisStorage) Dequeue(ctx context.Context, queueName string) (*JobEnvel
 	if err := json.Unmarshal([]byte(data), &env); err != nil {
 		return nil, err
 	}
+	if err := r.client.SAdd(ctx, "runiq:active:"+queueName, jobID).Err(); err != nil {
+		return nil, err
+	}
 	return &env, nil
 }
 
-// Ack removes the job from the active jobs hash.
+// Ack removes the job from the active jobs hash and active set.
 func (r *RedisStorage) Ack(ctx context.Context, jobID string) error {
-	return r.client.HDel(ctx, "runiq:jobs", jobID).Err()
+	data, err := r.client.HGet(ctx, "runiq:jobs", jobID).Result()
+	if err == redis.Nil {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var env JobEnvelope
+	if err := json.Unmarshal([]byte(data), &env); err != nil {
+		return err
+	}
+	pipe := r.client.Pipeline()
+	pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
+	pipe.HDel(ctx, "runiq:jobs", jobID)
+	_, err = pipe.Exec(ctx)
+	return err
 }
 
-// Fail deletes or transitions the job details on failure.
+// Fail transitions the job from active set to failed set.
 func (r *RedisStorage) Fail(ctx context.Context, jobID string, runErr error) error {
-	return r.client.HDel(ctx, "runiq:jobs", jobID).Err()
+	data, err := r.client.HGet(ctx, "runiq:jobs", jobID).Result()
+	if err == redis.Nil {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var env JobEnvelope
+	if err := json.Unmarshal([]byte(data), &env); err != nil {
+		return err
+	}
+	pipe := r.client.Pipeline()
+	pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
+	pipe.SAdd(ctx, "runiq:failed:"+env.Queue, jobID)
+	_, err = pipe.Exec(ctx)
+	return err
 }
 
 // GetStats retrieves the current statistics of jobs in Redis.
@@ -78,10 +111,22 @@ func (r *RedisStorage) GetStats(ctx context.Context) (*Stats, error) {
 		if err != nil {
 			return nil, err
 		}
+		active, err := r.client.SCard(ctx, "runiq:active:"+q).Result()
+		if err != nil {
+			return nil, err
+		}
+		failed, err := r.client.SCard(ctx, "runiq:failed:"+q).Result()
+		if err != nil {
+			return nil, err
+		}
 		stats.Pending += pending
+		stats.Running += active
+		stats.Failed += failed
 		stats.Queues = append(stats.Queues, QueueStats{
 			Name:    q,
 			Pending: pending,
+			Running: active,
+			Failed:  failed,
 		})
 	}
 	return &stats, nil

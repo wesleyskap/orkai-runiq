@@ -19,7 +19,7 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 * **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, and calculating job stats.
 
 ### queue/redis.go
-* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, and tracking queue stats.
+* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, and tracking queue stats (Pending, Active, and Failed) using dedicated Redis Sets.
 
 ### queue/client.go
 * **Client**: Client helper for enqueuing jobs with transparent Trace ID propagation.

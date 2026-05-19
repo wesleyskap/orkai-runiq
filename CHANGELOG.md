@@ -2,6 +2,11 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [0.5.0] - 2026-05-19
+
+### Added
+- Track active and failed jobs dynamically in Redis driver using Sets to provide full dashboard stats alignment.
+
 ## [0.4.0] - 2026-05-19
 
 ### Added
