@@ -118,6 +118,19 @@ func (f *FakeStorage) PostponeJob(ctx context.Context, jobID string, queueName s
 	return nil
 }
 
+func (f *FakeStorage) CreateBatch(ctx context.Context, batchID string, callback *queue.JobEnvelope) error {
+	return nil
+}
+
+func (f *FakeStorage) EnqueueInBatch(ctx context.Context, batchID string, env *queue.JobEnvelope) error {
+	f.Enqueued = append(f.Enqueued, env)
+	return nil
+}
+
+func (f *FakeStorage) SubmitBatch(ctx context.Context, batchID string) error {
+	return nil
+}
+
 // DummyJob implements queue.Job for verification.
 type DummyJob struct {
 	Executed bool

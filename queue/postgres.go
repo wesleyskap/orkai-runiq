@@ -109,10 +109,10 @@ func (p *PostgresStorage) Dequeue(ctx context.Context, queueName string) (*JobEn
 			ORDER BY created_at ASC
 			FOR UPDATE SKIP LOCKED LIMIT 1
 		)
-		RETURNING job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key`
+		RETURNING job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id`
 	row := p.db.QueryRowContext(ctx, query, queueName)
 	var env JobEnvelope
-	err := row.Scan(&env.JobID, &env.Queue, &env.Name, &env.Args, &env.TraceContext.TraceID, &env.TraceContext.SpanID, &env.Attempts, &env.MaxAttempts, &env.UniqueKey)
+	err := row.Scan(&env.JobID, &env.Queue, &env.Name, &env.Args, &env.TraceContext.TraceID, &env.TraceContext.SpanID, &env.Attempts, &env.MaxAttempts, &env.UniqueKey, &env.BatchID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -121,8 +121,8 @@ func (p *PostgresStorage) Dequeue(ctx context.Context, queueName string) (*JobEn
 
 // Ack marks the job as processed on success.
 func (p *PostgresStorage) Ack(ctx context.Context, jobID string) error {
-	var uniqueKey, queueName string
-	err := p.db.QueryRowContext(ctx, "SELECT unique_key, queue FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&uniqueKey, &queueName)
+	var uniqueKey, queueName, batchID string
+	err := p.db.QueryRowContext(ctx, "SELECT unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&uniqueKey, &queueName, &batchID)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
@@ -146,14 +146,49 @@ func (p *PostgresStorage) Ack(ctx context.Context, jobID string) error {
 		}
 	}
 
+	if batchID != "" {
+		var pendingJobs int
+		var status, callbackQueue, callbackName string
+		var callbackArgs []byte
+		err = tx.QueryRowContext(ctx, `
+			UPDATE runiq_batches
+			SET pending_jobs = pending_jobs - 1
+			WHERE batch_id = $1
+			RETURNING pending_jobs, status, callback_queue, callback_name, callback_args`,
+			batchID,
+		).Scan(&pendingJobs, &status, &callbackQueue, &callbackName, &callbackArgs)
+		if err == nil {
+			if status == "sealed" && pendingJobs == 0 {
+				_, err = tx.ExecContext(ctx, `
+					UPDATE runiq_batches
+					SET status = 'completed'
+					WHERE batch_id = $1`, batchID)
+				if err != nil {
+					return err
+				}
+
+				callbackJobID := generateJobID()
+				query := `
+					INSERT INTO runiq_jobs (job_id, queue, name, args, status, attempts, max_attempts, run_at)
+					VALUES ($1, $2, $3, $4, 'pending', 0, 3, CURRENT_TIMESTAMP)`
+				_, err = tx.ExecContext(ctx, query, callbackJobID, callbackQueue, callbackName, callbackArgs)
+				if err != nil {
+					return err
+				}
+			}
+		} else if err != sql.ErrNoRows {
+			return err
+		}
+	}
+
 	return tx.Commit()
 }
 
 // Fail updates the status to failed and sets error details. If attempts < max_attempts, schedules a retry.
 func (p *PostgresStorage) Fail(ctx context.Context, jobID string, runErr error) error {
 	var attempts, maxAttempts int
-	var uniqueKey, queueName string
-	err := p.db.QueryRowContext(ctx, "SELECT attempts, max_attempts, unique_key, queue FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&attempts, &maxAttempts, &uniqueKey, &queueName)
+	var uniqueKey, queueName, batchID string
+	err := p.db.QueryRowContext(ctx, "SELECT attempts, max_attempts, unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&attempts, &maxAttempts, &uniqueKey, &queueName, &batchID)
 	if err != nil {
 		return err
 	}
@@ -202,6 +237,13 @@ func (p *PostgresStorage) Fail(ctx context.Context, jobID string, runErr error) 
 				return err
 			}
 		}
+
+		if batchID != "" {
+			_, err = tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'failed' WHERE batch_id = $1", batchID)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	return tx.Commit()
 }
@@ -233,6 +275,7 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 	ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS max_attempts INT DEFAULT 3;
 	ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS run_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
 	ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS unique_key VARCHAR(255) DEFAULT '';
+	ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(255) DEFAULT '';
 
 	CREATE TABLE IF NOT EXISTS runiq_unique_locks (
 		lock_key VARCHAR(255) PRIMARY KEY,
@@ -259,6 +302,17 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		request_timestamp BIGINT NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_runiq_rate_limits_ts ON runiq_rate_limits (job_name, request_timestamp);
+
+	CREATE TABLE IF NOT EXISTS runiq_batches (
+		batch_id VARCHAR(255) PRIMARY KEY,
+		callback_queue VARCHAR(255) NOT NULL,
+		callback_name VARCHAR(255) NOT NULL,
+		callback_args BYTEA NOT NULL,
+		total_jobs INT NOT NULL DEFAULT 0,
+		pending_jobs INT NOT NULL DEFAULT 0,
+		status VARCHAR(50) NOT NULL DEFAULT 'open',
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := db.ExecContext(ctx, schema)
 	return err
@@ -516,4 +570,153 @@ func (p *PostgresStorage) PostponeJob(ctx context.Context, jobID string, queueNa
 	runAt := time.Now().Add(delay)
 	_, err := p.db.ExecContext(ctx, "UPDATE runiq_jobs SET status = 'pending', run_at = $2, locked_at = NULL WHERE job_id = $1", jobID, runAt)
 	return err
+}
+
+// CreateBatch registers a new batch record with open status and callback details.
+func (p *PostgresStorage) CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope) error {
+	query := `
+		INSERT INTO runiq_batches (batch_id, callback_queue, callback_name, callback_args, total_jobs, pending_jobs, status)
+		VALUES ($1, $2, $3, $4, 0, 0, 'open')`
+	_, err := p.db.ExecContext(ctx, query, batchID, callback.Queue, callback.Name, callback.Args)
+	return err
+}
+
+// EnqueueInBatch associates a job envelope with a batch and enqueues it, incrementing batch job counts.
+func (p *PostgresStorage) EnqueueInBatch(ctx context.Context, batchID string, env *JobEnvelope) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Increment total and pending counts
+	_, err = tx.ExecContext(ctx, `
+		UPDATE runiq_batches
+		SET total_jobs = total_jobs + 1, pending_jobs = pending_jobs + 1
+		WHERE batch_id = $1`, batchID)
+	if err != nil {
+		return err
+	}
+
+	// Handle Unique Lock check
+	if env.UniqueKey != "" {
+		lockKey := env.Queue + ":" + env.UniqueKey
+		ttl := env.UniqueTTL
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
+		}
+		expiresAt := time.Now().Add(ttl)
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO runiq_unique_locks (lock_key, job_id, expires_at)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (lock_key) DO NOTHING`,
+			lockKey, env.JobID, expiresAt,
+		)
+		if err != nil {
+			return err
+		}
+
+		var existingJobID string
+		var existingExpiresAt time.Time
+		err = tx.QueryRowContext(ctx, `
+			SELECT job_id, expires_at FROM runiq_unique_locks WHERE lock_key = $1`,
+			lockKey,
+		).Scan(&existingJobID, &existingExpiresAt)
+		if err != nil {
+			return err
+		}
+
+		if existingJobID != env.JobID {
+			var exists bool
+			_ = tx.QueryRowContext(ctx, `
+				SELECT EXISTS(SELECT 1 FROM runiq_jobs WHERE job_id = $1)`,
+				existingJobID,
+			).Scan(&exists)
+
+			if time.Now().Before(existingExpiresAt) && exists {
+				return ErrDuplicateJob
+			}
+
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO runiq_unique_locks (lock_key, job_id, expires_at)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (lock_key) DO UPDATE SET job_id = $2, expires_at = $3`,
+				lockKey, env.JobID, expiresAt,
+			)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Insert the job into runiq_jobs
+	runAt := time.Now()
+	if env.RunAt != nil {
+		runAt = *env.RunAt
+	}
+	maxAttempts := env.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	query := `
+		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status, attempts, max_attempts, run_at, unique_key, batch_id)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending', 0, $7, $8, $9, $10)`
+	_, err = tx.ExecContext(ctx, query,
+		env.JobID, env.Queue, env.Name, env.Args,
+		env.TraceContext.TraceID, env.TraceContext.SpanID,
+		maxAttempts, runAt, env.UniqueKey, batchID,
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// SubmitBatch seals the batch enqueuing phase and triggers callback if all jobs have already completed.
+func (p *PostgresStorage) SubmitBatch(ctx context.Context, batchID string) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Update status to sealed
+	var pendingJobs int
+	var callbackQueue, callbackName string
+	var callbackArgs []byte
+	err = tx.QueryRowContext(ctx, `
+		UPDATE runiq_batches
+		SET status = 'sealed'
+		WHERE batch_id = $1
+		RETURNING pending_jobs, callback_queue, callback_name, callback_args`,
+		batchID,
+	).Scan(&pendingJobs, &callbackQueue, &callbackName, &callbackArgs)
+	if err != nil {
+		return err
+	}
+
+	if pendingJobs == 0 {
+		// All jobs completed! Enqueue callback
+		_, err = tx.ExecContext(ctx, `
+			UPDATE runiq_batches
+			SET status = 'completed'
+			WHERE batch_id = $1`, batchID)
+		if err != nil {
+			return err
+		}
+
+		callbackJobID := generateJobID()
+		query := `
+			INSERT INTO runiq_jobs (job_id, queue, name, args, status, attempts, max_attempts, run_at)
+			VALUES ($1, $2, $3, $4, 'pending', 0, 3, CURRENT_TIMESTAMP)`
+		_, err = tx.ExecContext(ctx, query, callbackJobID, callbackQueue, callbackName, callbackArgs)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }

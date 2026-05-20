@@ -263,6 +263,47 @@ If a job is dequeued and Runiq detects that it exceeds either the concurrency li
 1. The worker automatically **postpones** the job by shifting it to a scheduled state with a short **1-second delay**.
 2. The worker pool immediately continues processing other non-throttled or ready jobs, maintaining maximum throughput and resource utilization across the cluster.
 
+## Workflows & Job Batches (MapReduce)
+
+Runiq supports grouping multiple background jobs into a cohesive workflow group called a `Batch`. This is extremely useful for MapReduce or scatter-gather patterns, where a final callback job should execute only after a group of parallel segment processing tasks have completed successfully.
+
+### Usage Pattern
+1. **Initialize the Batch**: Define a callback job envelope.
+2. **Enqueue Batch Jobs**: Enqueue multiple parallel jobs associated with the batch.
+3. **Submit the Batch**: Seal the batch. This marks the batch enqueuing phase as completed.
+
+```go
+// 1. Initialize the batch with a callback job
+callback := &queue.JobEnvelope{
+	Queue: "default",
+	Name:  "OnSuccessCallback",
+	Args:  []byte(`{"status":"all_done"}`),
+}
+batch, err := client.NewBatch(ctx, callback)
+if err != nil {
+	log.Fatalf("failed to create batch: %v", err)
+}
+
+// 2. Enqueue parallel workflow jobs
+for _, segment := range segments {
+	err := batch.Enqueue(ctx, "default", "ProcessSegment", segment.Data)
+	if err != nil {
+		log.Fatalf("failed to enqueue segment: %v", err)
+	}
+}
+
+// 3. Submit the batch to seal it and start execution tracking
+err = batch.Submit(ctx)
+if err != nil {
+	log.Fatalf("failed to submit batch: %v", err)
+}
+```
+
+### Safety & Resiliency
+- **Concurrency & Race Condition Immune**: Runiq tracks batches with state-based safety (`'open'`, `'sealed'`, `'completed'`, `'failed'`). If all parallel jobs finish before the batch is sealed with `Submit()`, the callback is safely deferred until `Submit()` is explicitly executed.
+- **Fail-Fast Failure Isolation**: If any job in the batch fails permanently (i.e. is sent to the Dead Letter Queue after exhausting its retries), the batch status transitions to `'failed'` immediately, preventing the callback from ever running.
+- **Atomic Backend Storage**: Implemented with native transactions in PostgreSQL (using `FOR UPDATE` and count tracking) and pipeline operations in Redis (using hashes and sets).
+
 ## Administration API & Dashboard Actions
 
 Runiq's dashboard contains interactive buttons to manage tasks directly. The server exposes the following endpoints:
@@ -331,7 +372,15 @@ ok  	github.com/wesleyskap/orkai-runiq/queue	0.373s
 --- PASS: TestClientScheduling (0.00s)
 === RUN   TestWorkerProcessRegistration
 --- PASS: TestWorkerProcessRegistration (0.05s)
+=== RUN   TestClientBatchCreation
+--- PASS: TestClientBatchCreation (0.00s)
+=== RUN   TestPostgresBatchFlow
+--- PASS: TestPostgresBatchFlow (0.15s)
+=== RUN   TestRedisBatchFlow
+--- PASS: TestRedisBatchFlow (0.12s)
+=== RUN   TestBatchFailureDoesNotTriggerCallback
+--- PASS: TestBatchFailureDoesNotTriggerCallback (0.50s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/test	2.885s
+ok  	github.com/wesleyskap/orkai-runiq/test	3.655s
 ```
 

@@ -2,6 +2,15 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [1.2.0] - 2026-05-20
+
+### Added
+- **Workflow Orchestration (Job Batches)**: Added support for grouping background tasks inside a dynamic execution group (`Batch`) that triggers a final callback job envelope upon successful completion of all constituent tasks.
+- **Client Batch API**: Created `NewBatch` initiator, `Enqueue` batch task scheduler, and `Submit` sealer ensuring race-condition immunity.
+- **PostgreSQL Storage Batches**: Created the `runiq_batches` table, added a `batch_id` column to `runiq_jobs`, implemented counting/state updates in `Ack`, and handled fail-fast transitions to `'failed'` in `Fail`.
+- **Redis Storage Batches**: Integrated atomic count tracking and state transitions using hashes (`runiq:batch:{batchID}`) and pipeline transaction updates.
+- **Batch Test Coverage**: Added comprehensive integration and isolation tests verifying enqueuing, submission, execution, and DLQ failure behaviors.
+
 ## [1.1.0] - 2026-05-20
 
 ### Added

@@ -27,6 +27,7 @@ type JobEnvelope struct {
 	UniqueTTL    time.Duration `json:"unique_ttl,omitempty"`
 	Attempts     int           `json:"attempts"`
 	MaxAttempts  int           `json:"max_attempts"`
+	BatchID      string        `json:"batch_id,omitempty"`
 }
 
 // JobDetail represents the serialized metadata for listing jobs in the dashboard.
@@ -135,6 +136,15 @@ type Storage interface {
 
 	// PostponeJob postpones a job to be executed in the future without failing it.
 	PostponeJob(ctx context.Context, jobID string, queueName string, delay time.Duration) error
+
+	// CreateBatch registers a new batch record with open status and callback details.
+	CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope) error
+
+	// EnqueueInBatch associates a job envelope with a batch and enqueues it, incrementing batch job counts.
+	EnqueueInBatch(ctx context.Context, batchID string, env *JobEnvelope) error
+
+	// SubmitBatch seals the batch enqueuing phase and triggers callback if all jobs have already completed.
+	SubmitBatch(ctx context.Context, batchID string) error
 }
 
 // CronJob represents a scheduled recurring task definition.

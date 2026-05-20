@@ -120,7 +120,30 @@ func (r *RedisStorage) Ack(ctx context.Context, jobID string) error {
 		pipe.Del(ctx, "runiq:unique:"+env.Queue+":"+env.UniqueKey)
 	}
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return err
+	}
+
+	if env.BatchID != "" {
+		batchKey := "runiq:batch:" + env.BatchID
+		pending, err := r.client.HIncrBy(ctx, batchKey, "pending", -1).Result()
+		if err == nil {
+			status, err := r.client.HGet(ctx, batchKey, "status").Result()
+			if err == nil && status == "sealed" && pending == 0 {
+				r.client.HSet(ctx, batchKey, "status", "completed")
+				callbackJSON, err := r.client.HGet(ctx, batchKey, "callback").Result()
+				if err == nil && callbackJSON != "" {
+					var callbackEnv JobEnvelope
+					if err := json.Unmarshal([]byte(callbackJSON), &callbackEnv); err == nil {
+						callbackEnv.JobID = generateJobID()
+						_ = r.Enqueue(ctx, &callbackEnv)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // Fail transitions the job from active set to failed list, or schedules a retry with exponential backoff if attempts < max_attempts.
@@ -180,6 +203,9 @@ func (r *RedisStorage) Fail(ctx context.Context, jobID string, runErr error) err
 		pipe.HSet(ctx, "runiq:errors", jobID, runErr.Error())
 		if env.UniqueKey != "" {
 			pipe.Del(ctx, "runiq:unique:"+env.Queue+":"+env.UniqueKey)
+		}
+		if env.BatchID != "" {
+			pipe.HSet(ctx, "runiq:batch:"+env.BatchID, "status", "failed")
 		}
 		_, err = pipe.Exec(ctx)
 		return err
@@ -646,4 +672,118 @@ func (r *RedisStorage) PostponeJob(ctx context.Context, jobID string, queueName 
 	})
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+// CreateBatch registers a new batch record with open status and callback details.
+func (r *RedisStorage) CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope) error {
+	callbackJSON, err := json.Marshal(callback)
+	if err != nil {
+		return err
+	}
+	batchKey := "runiq:batch:" + batchID
+	pipe := r.client.Pipeline()
+	pipe.HSet(ctx, batchKey, "status", "open")
+	pipe.HSet(ctx, batchKey, "total", 0)
+	pipe.HSet(ctx, batchKey, "pending", 0)
+	pipe.HSet(ctx, batchKey, "callback", callbackJSON)
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+// EnqueueInBatch associates a job envelope with a batch and enqueues it, incrementing batch job counts.
+func (r *RedisStorage) EnqueueInBatch(ctx context.Context, batchID string, env *JobEnvelope) error {
+	env.BatchID = batchID
+	maxAttempts := env.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	env.MaxAttempts = maxAttempts
+
+	batchKey := "runiq:batch:" + batchID
+	pipe := r.client.Pipeline()
+	pipe.HIncrBy(ctx, batchKey, "total", 1)
+	pipe.HIncrBy(ctx, batchKey, "pending", 1)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Unique Lock check
+	if env.UniqueKey != "" {
+		lockKey := "runiq:unique:" + env.Queue + ":" + env.UniqueKey
+		ttl := env.UniqueTTL
+		if ttl <= 0 {
+			ttl = 24 * time.Hour
+		}
+		ok, err := r.client.SetNX(ctx, lockKey, env.JobID, ttl).Result()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			existingJobID, err := r.client.Get(ctx, lockKey).Result()
+			if err == nil && existingJobID != "" {
+				exists, err := r.client.HExists(ctx, "runiq:jobs", existingJobID).Result()
+				if err == nil && exists {
+					return ErrDuplicateJob
+				}
+			}
+			if err := r.client.Set(ctx, lockKey, env.JobID, ttl).Err(); err != nil {
+				return err
+			}
+		}
+	}
+
+	data, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+	enqueuePipe := r.client.Pipeline()
+	enqueuePipe.HSet(ctx, "runiq:jobs", env.JobID, data)
+	enqueuePipe.SAdd(ctx, "runiq:queues", env.Queue)
+
+	if env.RunAt != nil && env.RunAt.After(time.Now()) {
+		enqueuePipe.ZAdd(ctx, "runiq:scheduled:"+env.Queue, redis.Z{
+			Score:  float64(env.RunAt.Unix()),
+			Member: env.JobID,
+		})
+	} else {
+		enqueuePipe.LPush(ctx, "runiq:queue:"+env.Queue, env.JobID)
+	}
+	_, err = enqueuePipe.Exec(ctx)
+	return err
+}
+
+// SubmitBatch seals the batch enqueuing phase and triggers callback if all jobs have already completed.
+func (r *RedisStorage) SubmitBatch(ctx context.Context, batchID string) error {
+	batchKey := "runiq:batch:" + batchID
+	err := r.client.HSet(ctx, batchKey, "status", "sealed").Err()
+	if err != nil {
+		return err
+	}
+
+	pendingStr, err := r.client.HGet(ctx, batchKey, "pending").Result()
+	if err != nil {
+		return err
+	}
+	
+	var pending int
+	_, _ = fmt.Sscanf(pendingStr, "%d", &pending)
+
+	if pending == 0 {
+		err = r.client.HSet(ctx, batchKey, "status", "completed").Err()
+		if err != nil {
+			return err
+		}
+
+		callbackJSON, err := r.client.HGet(ctx, batchKey, "callback").Result()
+		if err == nil && callbackJSON != "" {
+			var callbackEnv JobEnvelope
+			if err := json.Unmarshal([]byte(callbackJSON), &callbackEnv); err == nil {
+				callbackEnv.JobID = generateJobID()
+				_ = r.Enqueue(ctx, &callbackEnv)
+			}
+		}
+	}
+
+	return nil
 }
