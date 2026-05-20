@@ -123,6 +123,17 @@ type Storage interface {
 
 	// GetActiveProcesses returns all active worker processes that have recently reported heartbeats.
 	GetActiveProcesses(ctx context.Context) ([]ProcessInfo, error)
+ 
+	// LockCronExecution attempts to acquire a unique execution lock for a cron job at a specific minute.
+	LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error)
+}
+
+// CronJob represents a scheduled recurring task definition.
+type CronJob struct {
+	Payload []byte `json:"payload"`
+	Spec    string `json:"spec"`
+	Name    string `json:"name"`
+	Queue   string `json:"queue"`
 }
 
 // Job defines the contract that every background task must implement.

@@ -17,7 +17,7 @@
             --primary: #6366f1;
             --pending: #38bdf8;
             --running: #34d399;
-            --failed: #f87171;
+            --dead: #f87171;
         }
 
         * {
@@ -111,7 +111,7 @@
         .card.pending::before { background-color: var(--pending); }
         .card.running::before { background-color: var(--running); }
         .card.processed::before { background-color: var(--running); }
-        .card.failed::before { background-color: var(--failed); }
+        .card.dead::before { background-color: var(--dead); }
 
         .card-title {
             font-size: 0.875rem;
@@ -131,7 +131,7 @@
         .card.pending .card-value { color: var(--pending); text-shadow: 0 0 10px rgba(56, 189, 248, 0.2); }
         .card.running .card-value { color: var(--running); text-shadow: 0 0 10px rgba(52, 211, 153, 0.2); }
         .card.processed .card-value { color: var(--running); text-shadow: 0 0 10px rgba(52, 211, 153, 0.2); }
-        .card.failed .card-value { color: var(--failed); text-shadow: 0 0 10px rgba(248, 113, 113, 0.2); }
+        .card.dead .card-value { color: var(--dead); text-shadow: 0 0 10px rgba(248, 113, 113, 0.2); }
 
         .table-container {
             background: var(--panel-bg);
@@ -239,7 +239,7 @@
         }
 
         .error-msg {
-            color: var(--failed);
+            color: var(--dead);
             font-size: 0.85rem;
             background: rgba(239, 68, 68, 0.05);
             border: 1px solid rgba(239, 68, 68, 0.1);
@@ -358,8 +358,8 @@
                 <span class="card-title">Processed Jobs</span>
                 <span class="card-value" id="val-processed">0</span>
             </div>
-            <div class="card failed">
-                <span class="card-title">Failed Jobs</span>
+            <div class="card dead">
+                <span class="card-title">Dead Jobs (DLQ)</span>
                 <span class="card-value" id="val-failed">0</span>
             </div>
         </div>
@@ -380,7 +380,7 @@
                         <th>Pending</th>
                         <th>Active</th>
                         <th>Processed</th>
-                        <th>Failed</th>
+                        <th>Dead (DLQ)</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -418,7 +418,7 @@
                 <button class="tab-btn active" data-tab="pending" onclick="switchTab('pending')">Pending</button>
                 <button class="tab-btn" data-tab="running" onclick="switchTab('running')">Active</button>
                 <button class="tab-btn" data-tab="processed" onclick="switchTab('processed')">Processed</button>
-                <button class="tab-btn" data-tab="failed" onclick="switchTab('failed')">Failed</button>
+                <button class="tab-btn" data-tab="dead" onclick="switchTab('dead')">Dead (DLQ)</button>
             </div>
             <table id="jobs-table">
                 <thead>
@@ -521,14 +521,12 @@
 
             tbody.innerHTML = '';
             
-            const statusMap = {
-                'pending': 'pending',
-                'running': 'running',
-                'processed': 'processed',
-                'failed': 'failed'
-            };
-            const targetStatus = statusMap[activeTab];
-            const filtered = latestJobs.filter(j => j.status === targetStatus);
+            const filtered = latestJobs.filter(j => {
+                if (activeTab === 'dead') {
+                    return j.status === 'dead' || j.status === 'failed';
+                }
+                return j.status === activeTab;
+            });
 
             if (filtered.length === 0) {
                 table.style.display = 'none';
@@ -540,7 +538,7 @@
             table.style.display = 'table';
             noJobs.style.display = 'none';
 
-            if (activeTab === 'failed') {
+            if (activeTab === 'dead') {
                 thExtra.style.display = 'table-cell';
             } else {
                 thExtra.style.display = 'none';
@@ -549,13 +547,13 @@
             filtered.forEach(j => {
                 const tr = document.createElement('tr');
                 let extraTd = '';
-                if (activeTab === 'failed') {
+                if (activeTab === 'dead') {
                     extraTd = `<td><div class="error-msg">${j.error_message || 'Unknown error'}</div></td>`;
                 }
                 let actionsHtml = '';
                 if (activeTab === 'pending' || activeTab === 'running') {
                     actionsHtml = `<button class="btn btn-danger" onclick="cancelJob('${j.job_id}')">Cancel</button>`;
-                } else if (activeTab === 'failed') {
+                } else if (activeTab === 'dead') {
                     actionsHtml = `
                         <div class="actions-cell">
                             <button class="btn btn-primary" onclick="retryJob('${j.job_id}')">Retry</button>

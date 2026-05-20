@@ -16,10 +16,10 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 * **Job**: Interface with the Perform(ctx, args) signature which must be implemented by any background task.
 
 ### queue/postgres.go
-* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, tracking `run_at` scheduled times, and calculating job stats (Pending, Active, Processed, and Failed).
+* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, tracking `run_at` scheduled times, moving jobs exceeding `max_attempts` to `'dead'` (DLQ) state, and calculating job stats (Pending, Active, Processed, and Dead/Failed).
 
 ### queue/redis.go
-* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, ZSets for future `run_at` schedules, and tracking queue stats (Pending, Active, Processed, and Failed) using dedicated Redis Sets and Lists.
+* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, ZSets for future `run_at` schedules, isolating exhausted jobs in `runiq:dead:{queue}` lists (DLQ), and tracking queue stats (Pending, Active, Processed, and Dead/Failed) using dedicated Redis Lists.
 
 ### queue/client.go
 * **Client**: Client helper for enqueuing jobs with transparent Trace ID propagation.
@@ -28,7 +28,7 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 * **WorkerPool**: Concurrent job processor utilizing buffered channel semaphores, context/trace restoration, and panic recovery.
 
 ### queue/server.go
-* **Server**: Native Go HTTP server displaying an embedded real-time HTML/CSS dashboard (with tabbed logs for Pending, Active, Processed, and Failed states updating every 5 seconds) and serving statistics in JSON format.
+* **Server**: Native Go HTTP server displaying an embedded real-time HTML/CSS dashboard (with tabbed logs for Pending, Active, Processed, and Dead (DLQ) states updating every 5 seconds) and serving statistics in JSON format.
 
 ### test/queue_test.go
 * **TestJobEnvelopeSerialization**: Verifies JSON serialization and deserialization of job envelopes.
@@ -192,6 +192,17 @@ err = client.EnqueueUnique(ctx, "default", "SendEmail", []byte(`{"to":"user@exam
 
 Locks are automatically released when the job completes successfully (`Ack`), fails permanently (exceeds maximum attempts), or is explicitly cancelled via the dashboard or API.
 
+## Recurring Tasks (Cron Jobs)
+
+Runiq supports registering recurring background tasks using standard 5-field cron spec expressions (e.g., `*/15 * * * *`). To avoid duplicate job execution when running multiple replicas of the worker pool, Runiq acquires a distributed lock at the storage level:
+
+```go
+// Register a cron job to run every day at midnight UTC
+pool.RegisterCron("0 0 * * *", "default", "DailyReport", []byte(`{"format":"pdf"}`))
+```
+
+The background scheduler runs automatically inside the `WorkerPool`. At the start of each matched minute, it attempts to acquire a lock for that minute. Only one worker instance in the cluster will succeed and enqueue the task.
+
 ## Active Worker Pool Monitoring
 
 When a `WorkerPool` starts, it automatically registers itself with the storage driver using a unique process identifier (comprising the hostname, PID, and a random token). The worker pool then maintains a periodic background heartbeat ticker (every 5 seconds) to signal its health.
@@ -235,12 +246,20 @@ go test ./... -v
 
 Expected output:
 ```text
+=== RUN   TestMatchCron
+--- PASS: TestMatchCron (0.00s)
+=== RUN   TestWorkerPoolCronScheduler_LockAcquired
+--- PASS: TestWorkerPoolCronScheduler_LockAcquired (0.00s)
+=== RUN   TestWorkerPoolCronScheduler_LockDenied
+--- PASS: TestWorkerPoolCronScheduler_LockDenied (0.00s)
+=== RUN   TestWorkerPoolCronScheduler_ProcessMatching
+--- PASS: TestWorkerPoolCronScheduler_ProcessMatching (0.01s)
 === RUN   TestWorkerPoolWeightedRotation
 --- PASS: TestWorkerPoolWeightedRotation (0.00s)
 === RUN   TestWorkerPoolStrictPriorityFallback
 --- PASS: TestWorkerPoolStrictPriorityFallback (0.00s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/queue	0.386s
+ok  	github.com/wesleyskap/orkai-runiq/queue	0.373s
 === RUN   TestJobEnvelopeSerialization
 --- PASS: TestJobEnvelopeSerialization (0.00s)
 === RUN   TestJobInterfaceConformance
@@ -251,6 +270,18 @@ ok  	github.com/wesleyskap/orkai-runiq/queue	0.386s
 --- PASS: TestDashboardUIEndpoint (0.03s)
 === RUN   TestAdminEndpoints
 --- PASS: TestAdminEndpoints (0.00s)
+=== RUN   TestPostgresStorageFlow
+    storage_test.go:34: skipping postgres storage tests, service unreachable
+--- SKIP: TestPostgresStorageFlow (0.01s)
+=== RUN   TestRedisStorageFlow
+    storage_test.go:85: skipping redis storage tests, service unreachable
+--- SKIP: TestRedisStorageFlow (2.00s)
+=== RUN   TestOTelTracer_ExtractAndInjectTrace
+--- PASS: TestOTelTracer_ExtractAndInjectTrace (0.00s)
+=== RUN   TestOTelTracer_Metrics
+--- PASS: TestOTelTracer_Metrics (0.00s)
+=== RUN   TestOTelTracer_QueueDepth
+--- PASS: TestOTelTracer_QueueDepth (0.00s)
 === RUN   TestClientTraceExtraction
 --- PASS: TestClientTraceExtraction (0.00s)
 === RUN   TestClientEnqueueUnique
@@ -264,6 +295,6 @@ ok  	github.com/wesleyskap/orkai-runiq/queue	0.386s
 === RUN   TestWorkerProcessRegistration
 --- PASS: TestWorkerProcessRegistration (0.05s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/test	2.589s
+ok  	github.com/wesleyskap/orkai-runiq/test	2.885s
 ```
 

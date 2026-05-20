@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/wesleyskap/orkai-runiq/queue"
 )
@@ -87,6 +88,10 @@ func (f *FakeStorage) HeartbeatProcess(ctx context.Context, processID string) er
 
 func (f *FakeStorage) GetActiveProcesses(ctx context.Context) ([]queue.ProcessInfo, error) {
 	return f.Processes, nil
+}
+
+func (f *FakeStorage) LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error) {
+	return true, nil
 }
 
 // DummyJob implements queue.Job for verification.

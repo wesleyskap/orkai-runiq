@@ -188,7 +188,7 @@ func (p *PostgresStorage) Fail(ctx context.Context, jobID string, runErr error) 
 	} else {
 		query := `
 			UPDATE runiq_jobs
-			SET status = 'failed', error_message = $2, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
+			SET status = 'dead', error_message = $2, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
 			WHERE job_id = $1`
 		_, err = tx.ExecContext(ctx, query, jobID, runErr.Error())
 		if err != nil {
@@ -245,6 +245,13 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		concurrency INT NOT NULL,
 		queues TEXT NOT NULL,
 		heartbeat_at TIMESTAMP WITH TIME ZONE NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS runiq_cron_locks (
+		cron_name VARCHAR(255) NOT NULL,
+		execution_minute TIMESTAMP WITH TIME ZONE NOT NULL,
+		acquired_at TIMESTAMP WITH TIME ZONE NOT NULL,
+		PRIMARY KEY (cron_name, execution_minute)
 	);
 	`
 	_, err := db.ExecContext(ctx, schema)
@@ -322,7 +329,7 @@ func (p *PostgresStorage) accumulateStats(stats *Stats, queueMap map[string]*Que
 	case "running":
 		stats.Running += count
 		qs.Running += count
-	case "failed":
+	case "failed", "dead":
 		stats.Failed += count
 		qs.Failed += count
 	case "processed":
@@ -435,4 +442,23 @@ func (p *PostgresStorage) GetActiveProcesses(ctx context.Context) ([]ProcessInfo
 		processes = append(processes, info)
 	}
 	return processes, nil
+}
+
+// LockCronExecution attempts to acquire a unique execution lock for a cron job at a specific minute.
+func (p *PostgresStorage) LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error) {
+	_, _ = p.db.ExecContext(ctx, "DELETE FROM runiq_cron_locks WHERE execution_minute < $1", time.Now().Add(-1*time.Hour))
+	res, err := p.db.ExecContext(ctx, `
+		INSERT INTO runiq_cron_locks (cron_name, execution_minute, acquired_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (cron_name, execution_minute) DO NOTHING`,
+		cronName, executionMinute.Truncate(time.Minute), time.Now(),
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }

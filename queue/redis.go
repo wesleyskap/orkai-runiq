@@ -175,8 +175,8 @@ func (r *RedisStorage) Fail(ctx context.Context, jobID string, runErr error) err
 		pipe := r.client.Pipeline()
 		pipe.HSet(ctx, "runiq:jobs", env.JobID, updatedData)
 		pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
-		pipe.LPush(ctx, "runiq:failed:"+env.Queue, jobID)
-		pipe.LTrim(ctx, "runiq:failed:"+env.Queue, 0, 49)
+		pipe.LPush(ctx, "runiq:dead:"+env.Queue, jobID)
+		pipe.LTrim(ctx, "runiq:dead:"+env.Queue, 0, 49)
 		pipe.HSet(ctx, "runiq:errors", jobID, runErr.Error())
 		if env.UniqueKey != "" {
 			pipe.Del(ctx, "runiq:unique:"+env.Queue+":"+env.UniqueKey)
@@ -245,19 +245,24 @@ func (r *RedisStorage) GetStats(ctx context.Context) (*Stats, error) {
 		if err != nil {
 			return nil, err
 		}
+		dead, err := r.client.LLen(ctx, "runiq:dead:"+q).Result()
+		if err != nil {
+			return nil, err
+		}
 
 		totalPending := pending + scheduled
 		stats.Pending += totalPending
 		stats.Running += active
 		stats.Processed += processed
-		stats.Failed += failed
+		totalFailed := failed + dead
+		stats.Failed += totalFailed
 
 		stats.Queues = append(stats.Queues, QueueStats{
 			Name:      q,
 			Pending:   totalPending,
 			Running:   active,
 			Processed: processed,
-			Failed:    failed,
+			Failed:    totalFailed,
 		})
 
 		pIDs, _ := r.client.LRange(ctx, "runiq:queue:"+q, 0, 49).Result()
@@ -284,6 +289,11 @@ func (r *RedisStorage) GetStats(ctx context.Context) (*Stats, error) {
 		for _, id := range fIDs {
 			allJobIDs = append(allJobIDs, id)
 			jobsMeta = append(jobsMeta, jobMeta{id: id, queue: q, status: "failed"})
+		}
+		dIDs, _ := r.client.LRange(ctx, "runiq:dead:"+q, 0, 49).Result()
+		for _, id := range dIDs {
+			allJobIDs = append(allJobIDs, id)
+			jobsMeta = append(jobsMeta, jobMeta{id: id, queue: q, status: "dead"})
 		}
 	}
 
@@ -352,6 +362,7 @@ func (r *RedisStorage) Retry(ctx context.Context, jobID string) error {
 	pipe := r.client.TxPipeline()
 	pipe.HSet(ctx, "runiq:jobs", jobID, newVal)
 	pipe.LRem(ctx, "runiq:failed:"+env.Queue, 0, jobID)
+	pipe.LRem(ctx, "runiq:dead:"+env.Queue, 0, jobID)
 	pipe.HDel(ctx, "runiq:errors", jobID)
 	pipe.LPush(ctx, "runiq:queue:"+env.Queue, jobID)
 
@@ -379,6 +390,7 @@ func (r *RedisStorage) Cancel(ctx context.Context, jobID string) error {
 	pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
 	pipe.ZRem(ctx, "runiq:scheduled:"+env.Queue, jobID)
 	pipe.LRem(ctx, "runiq:failed:"+env.Queue, 0, jobID)
+	pipe.LRem(ctx, "runiq:dead:"+env.Queue, 0, jobID)
 	pipe.LRem(ctx, "runiq:processed:"+env.Queue, 0, jobID)
 	pipe.HDel(ctx, "runiq:jobs", jobID)
 	pipe.HDel(ctx, "runiq:errors", jobID)
@@ -397,6 +409,7 @@ func (r *RedisStorage) ClearQueue(ctx context.Context, queue string) error {
 	aIDs, _ := r.client.SMembers(ctx, "runiq:active:"+queue).Result()
 	prIDs, _ := r.client.LRange(ctx, "runiq:processed:"+queue, 0, -1).Result()
 	fIDs, _ := r.client.LRange(ctx, "runiq:failed:"+queue, 0, -1).Result()
+	dIDs, _ := r.client.LRange(ctx, "runiq:dead:"+queue, 0, -1).Result()
 
 	var allJobIDs []string
 	allJobIDs = append(allJobIDs, pIDs...)
@@ -404,6 +417,7 @@ func (r *RedisStorage) ClearQueue(ctx context.Context, queue string) error {
 	allJobIDs = append(allJobIDs, aIDs...)
 	allJobIDs = append(allJobIDs, prIDs...)
 	allJobIDs = append(allJobIDs, fIDs...)
+	allJobIDs = append(allJobIDs, dIDs...)
 
 	var cursor uint64
 	var keysToDelete []string
@@ -435,6 +449,7 @@ func (r *RedisStorage) ClearQueue(ctx context.Context, queue string) error {
 	pipe.Del(ctx, "runiq:scheduled:"+queue)
 	pipe.Del(ctx, "runiq:processed:"+queue)
 	pipe.Del(ctx, "runiq:failed:"+queue)
+	pipe.Del(ctx, "runiq:dead:"+queue)
 
 	_, err := pipe.Exec(ctx)
 	return err
@@ -538,4 +553,15 @@ func (r *RedisStorage) sliceToInterfaces(slice []string) []interface{} {
 		result[i] = v
 	}
 	return result
+}
+
+// LockCronExecution attempts to acquire a unique execution lock for a cron job at a specific minute.
+func (r *RedisStorage) LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error) {
+	minuteUnix := executionMinute.Truncate(time.Minute).Unix()
+	lockKey := fmt.Sprintf("runiq:cron:lock:%s:%d", cronName, minuteUnix)
+	ok, err := r.client.SetNX(ctx, lockKey, "1", 5*time.Minute).Result()
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire cron lock for %q at %v: %w", cronName, executionMinute, err)
+	}
+	return ok, nil
 }

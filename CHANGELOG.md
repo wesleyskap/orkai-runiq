@@ -2,6 +2,23 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [1.0.0] - 2026-05-20
+
+### Added
+- **Dead Letter Queue (DLQ) & Poison Pill Inspector (Fase 7)**: Jobs exceeding `max_attempts` now transition to `'dead'` status instead of `'failed'`.
+- **Redis Storage Update**: Pushes permanently failed jobs to `runiq:dead:{queue}` list with LTrim capped at 50 elements.
+- **Postgres Storage Update**: Sets the status field to `'dead'` inside `runiq_jobs`.
+- **Dashboard UI SPA Enhancement**: Renamed tab, status card, and queue columns to "Dead (DLQ)", allowing error inspection and direct manual Retry/Cancel.
+- **Testing Coverage**: Added unit/integration assertions checking the correct transition of exhausted jobs in both storage backends.
+
+## [0.13.0] - 2026-05-20
+
+### Added
+- **Cron & Recurring Tasks (Fase 6)**: Added support for scheduling periodic jobs using standard 5-field cron spec expressions.
+- **Distributed Cron Locks**: Implemented `LockCronExecution` inside both `PostgreSQL` (using a dedicated locks schema table with automated pruning) and `Redis` storage drivers to guarantee execution safety across multi-replica pool deployments.
+- **WorkerPool Integration**: Added background cron scheduler loop to `WorkerPool.Start` evaluating registered entries and enqueuing them safely.
+- **Unit and Integration Coverage**: Built MatchCron parser suite, lock collision tests, and matching logic simulations inside `queue/cron_test.go`.
+
 ## [0.12.0] - 2026-05-20
 
 ### Added

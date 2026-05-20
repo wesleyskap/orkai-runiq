@@ -310,6 +310,16 @@ func assertRedisRetryFlow(t *testing.T, ctx context.Context, s queue.Storage, cl
 	if stats.Failed != 1 {
 		t.Errorf("expected 1 failed job in stats, got %d", stats.Failed)
 	}
+
+	// Verify it was pushed to runiq:dead list and NOT runiq:failed
+	deadLen, err := client.LLen(ctx, "runiq:dead:redis-retry-queue").Result()
+	if err != nil || deadLen != 1 {
+		t.Errorf("expected 1 job in runiq:dead list, got %d (err: %v)", deadLen, err)
+	}
+	failedLen, err := client.LLen(ctx, "runiq:failed:redis-retry-queue").Result()
+	if err != nil || failedLen != 0 {
+		t.Errorf("expected 0 jobs in runiq:failed list, got %d (err: %v)", failedLen, err)
+	}
 }
 
 func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
@@ -405,6 +415,16 @@ func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s queue.Storage,
 	stats, _ := s.GetStats(ctx)
 	if stats.Failed != 1 {
 		t.Errorf("expected 1 failed job in stats, got %d", stats.Failed)
+	}
+
+	// Verify it has status = 'dead' in the DB
+	var status string
+	err = db.QueryRowContext(ctx, "SELECT status FROM runiq_jobs WHERE job_id = $1", "job-postgres-retry-2").Scan(&status)
+	if err != nil {
+		t.Errorf("failed to query job status: %v", err)
+	}
+	if status != "dead" {
+		t.Errorf("expected job status to be 'dead', got '%s'", status)
 	}
 }
 

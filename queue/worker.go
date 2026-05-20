@@ -12,14 +12,15 @@ import (
 // WorkerPool processes jobs concurrently from the storage backend.
 type WorkerPool struct {
 	firstQueues  []string
+	cronJobs     []CronJob
 	storage      Storage
 	logger       Logger
 	tracer       Tracer
 	processID    string
 	registry     map[string]Job
 	weights      map[string]int
-	concurrency  int
 	fetchCounter uint64
+	concurrency  int
 }
 
 // NewWorkerPool instantiates a new WorkerPool.
@@ -77,6 +78,16 @@ func (w *WorkerPool) Register(name string, job Job) {
 	w.registry[name] = job
 }
 
+// RegisterCron registers a recurring task under the specified cron spec.
+func (w *WorkerPool) RegisterCron(spec, queue, name string, payload []byte) {
+	w.cronJobs = append(w.cronJobs, CronJob{
+		Payload: payload,
+		Spec:    spec,
+		Name:    name,
+		Queue:   queue,
+	})
+}
+
 // Start spawns workers and begins consuming from specified queues.
 func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
 	if len(w.weights) > 0 {
@@ -116,6 +127,11 @@ func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
 			}
 		}
 	}()
+
+	// Start cron scheduler goroutine
+	if len(w.cronJobs) > 0 {
+		go w.startCronScheduler(ctx)
+	}
 
 	sem := make(chan struct{}, w.concurrency)
 
@@ -237,4 +253,51 @@ func (w *WorkerPool) finalizeJob(ctx context.Context, env *JobEnvelope, start ti
 	_ = w.storage.Ack(ctx, env.JobID)
 	w.tracer.IncrementCounter(ctx, "runiq_job_success", map[string]string{"name": env.Name})
 	w.logger.Info(ctx, "job completed", "job_id", env.JobID)
+}
+
+func (w *WorkerPool) startCronScheduler(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	var lastMinute int = -1
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now().UTC()
+			if now.Minute() != lastMinute {
+				lastMinute = now.Minute()
+				w.processCronJobs(ctx, now)
+			}
+		}
+	}
+}
+
+func (w *WorkerPool) processCronJobs(ctx context.Context, now time.Time) {
+	for _, cron := range w.cronJobs {
+		if MatchCron(cron.Spec, now) {
+			go w.enqueueCronJob(ctx, cron, now)
+		}
+	}
+}
+
+func (w *WorkerPool) enqueueCronJob(ctx context.Context, cron CronJob, now time.Time) {
+	ok, err := w.storage.LockCronExecution(ctx, cron.Name, now)
+	if err != nil {
+		w.logger.Error(ctx, "failed to check cron lock", err, "cron_name", cron.Name)
+		return
+	}
+	if !ok {
+		return
+	}
+	env := &JobEnvelope{
+		JobID:       fmt.Sprintf("cron-%s-%d", cron.Name, now.Unix()),
+		Queue:       cron.Queue,
+		Name:        cron.Name,
+		Args:        cron.Payload,
+		MaxAttempts: 3,
+	}
+	if err := w.storage.Enqueue(ctx, env); err != nil {
+		w.logger.Error(ctx, "failed to enqueue cron job", err, "cron_name", cron.Name)
+	}
 }
