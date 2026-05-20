@@ -565,3 +565,85 @@ func (r *RedisStorage) LockCronExecution(ctx context.Context, cronName string, e
 	}
 	return ok, nil
 }
+
+// GetRunningJobsCount returns the number of currently running jobs with the specified name.
+func (r *RedisStorage) GetRunningJobsCount(ctx context.Context, jobName string) (int, error) {
+	queues, err := r.client.SMembers(ctx, "runiq:queues").Result()
+	if err != nil {
+		return 0, err
+	}
+	var activeIDs []string
+	for _, q := range queues {
+		ids, err := r.client.SMembers(ctx, "runiq:active:"+q).Result()
+		if err == nil {
+			activeIDs = append(activeIDs, ids...)
+		}
+	}
+	if len(activeIDs) == 0 {
+		return 0, nil
+	}
+	envelopes, err := r.client.HMGet(ctx, "runiq:jobs", activeIDs...).Result()
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, val := range envelopes {
+		if val == nil {
+			continue
+		}
+		strVal, ok := val.(string)
+		if !ok {
+			continue
+		}
+		var env JobEnvelope
+		if err := json.Unmarshal([]byte(strVal), &env); err == nil {
+			if env.Name == jobName {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
+// CheckRateLimit checks and increments/updates the rate limit window for a job name.
+func (r *RedisStorage) CheckRateLimit(ctx context.Context, jobName string, limit int, period time.Duration) (bool, error) {
+	now := time.Now().UnixNano()
+	clearBefore := now - period.Nanoseconds()
+	key := "runiq:ratelimit:" + jobName
+
+	pipe := r.client.TxPipeline()
+	pipe.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", clearBefore))
+	zcard := pipe.ZCard(ctx, key)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	currentCount := zcard.Val()
+	if currentCount >= int64(limit) {
+		return false, nil
+	}
+
+	err = r.client.ZAdd(ctx, key, redis.Z{
+		Score:  float64(now),
+		Member: fmt.Sprintf("%d", now),
+	}).Err()
+	if err != nil {
+		return false, err
+	}
+	r.client.Expire(ctx, key, period*2)
+	return true, nil
+}
+
+// PostponeJob postpones a job to be executed in the future without failing it.
+func (r *RedisStorage) PostponeJob(ctx context.Context, jobID string, queueName string, delay time.Duration) error {
+	runAt := time.Now().Add(delay).Unix()
+	pipe := r.client.TxPipeline()
+	pipe.SRem(ctx, "runiq:active:"+queueName, jobID)
+	pipe.ZAdd(ctx, "runiq:scheduled:"+queueName, redis.Z{
+		Score:  float64(runAt),
+		Member: jobID,
+	})
+	_, err := pipe.Exec(ctx)
+	return err
+}

@@ -253,6 +253,12 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		acquired_at TIMESTAMP WITH TIME ZONE NOT NULL,
 		PRIMARY KEY (cron_name, execution_minute)
 	);
+
+	CREATE TABLE IF NOT EXISTS runiq_rate_limits (
+		job_name VARCHAR(255) NOT NULL,
+		request_timestamp BIGINT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_runiq_rate_limits_ts ON runiq_rate_limits (job_name, request_timestamp);
 	`
 	_, err := db.ExecContext(ctx, schema)
 	return err
@@ -461,4 +467,53 @@ func (p *PostgresStorage) LockCronExecution(ctx context.Context, cronName string
 		return false, err
 	}
 	return rows > 0, nil
+}
+
+// GetRunningJobsCount returns the number of currently running jobs with the specified name.
+func (p *PostgresStorage) GetRunningJobsCount(ctx context.Context, jobName string) (int, error) {
+	var count int
+	err := p.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM runiq_jobs WHERE name = $1 AND status = 'running'", jobName).Scan(&count)
+	return count, err
+}
+
+// CheckRateLimit checks and increments/updates the rate limit window for a job name.
+func (p *PostgresStorage) CheckRateLimit(ctx context.Context, jobName string, limit int, period time.Duration) (bool, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UnixNano()
+	clearBefore := now - period.Nanoseconds()
+
+	_, err = tx.ExecContext(ctx, "DELETE FROM runiq_rate_limits WHERE job_name = $1 AND request_timestamp < $2", jobName, clearBefore)
+	if err != nil {
+		return false, err
+	}
+
+	var count int
+	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM runiq_rate_limits WHERE job_name = $1", jobName).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+
+	if count >= limit {
+		return false, nil
+	}
+
+	_, err = tx.ExecContext(ctx, "INSERT INTO runiq_rate_limits (job_name, request_timestamp) VALUES ($1, $2)", jobName, now)
+	if err != nil {
+		return false, err
+	}
+
+	err = tx.Commit()
+	return err == nil, err
+}
+
+// PostponeJob postpones a job to be executed in the future without failing it.
+func (p *PostgresStorage) PostponeJob(ctx context.Context, jobID string, queueName string, delay time.Duration) error {
+	runAt := time.Now().Add(delay)
+	_, err := p.db.ExecContext(ctx, "UPDATE runiq_jobs SET status = 'pending', run_at = $2, locked_at = NULL WHERE job_id = $1", jobID, runAt)
+	return err
 }

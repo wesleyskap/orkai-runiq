@@ -66,6 +66,10 @@ func TestPostgresStorageFlow(t *testing.T) {
 	t.Run("ActiveProcesses", func(t *testing.T) {
 		assertPostgresActiveProcesses(t, ctx, storage, db)
 	})
+
+	t.Run("ThrottlingAndRateLimiting", func(t *testing.T) {
+		assertPostgresThrottling(t, ctx, storage, db)
+	})
 }
 
 // TestRedisStorageFlow runs a sequence of tests asserting correct Redis storage driver behavior.
@@ -111,6 +115,10 @@ func TestRedisStorageFlow(t *testing.T) {
 
 	t.Run("ActiveProcesses", func(t *testing.T) {
 		assertRedisActiveProcesses(t, ctx, storage, client)
+	})
+
+	t.Run("ThrottlingAndRateLimiting", func(t *testing.T) {
+		assertRedisThrottling(t, ctx, storage, client)
 	})
 }
 
@@ -703,5 +711,143 @@ func assertRedisActiveProcesses(t *testing.T, ctx context.Context, s queue.Stora
 		t.Errorf("expected process in stats, got %v", stats.Processes)
 	}
 }
+
+func assertPostgresThrottling(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+	clearPostgresJobsTable(t, db)
+	_, _ = db.Exec("DELETE FROM runiq_rate_limits")
+
+	// 1. Test GetRunningJobsCount
+	// Enqueue a job and set it to status = 'running'
+	env := &queue.JobEnvelope{
+		JobID: "job-throttle-p1",
+		Queue: "default",
+		Name:  "TestThrottle",
+		Args:  []byte("{}"),
+	}
+	if err := s.Enqueue(ctx, env); err != nil {
+		t.Fatalf("failed to enqueue: %v", err)
+	}
+	_, err := db.Exec("UPDATE runiq_jobs SET status = 'running' WHERE job_id = $1", env.JobID)
+	if err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	count, err := s.GetRunningJobsCount(ctx, "TestThrottle")
+	if err != nil {
+		t.Fatalf("GetRunningJobsCount failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 running job, got %d", count)
+	}
+
+	// 2. Test CheckRateLimit
+	ok, err := s.CheckRateLimit(ctx, "TestThrottle", 2, 100*time.Millisecond)
+	if err != nil || !ok {
+		t.Errorf("expected rate limit check 1 to be true, got ok=%v, err=%v", ok, err)
+	}
+	ok, err = s.CheckRateLimit(ctx, "TestThrottle", 2, 100*time.Millisecond)
+	if err != nil || !ok {
+		t.Errorf("expected rate limit check 2 to be true, got ok=%v, err=%v", ok, err)
+	}
+	ok, err = s.CheckRateLimit(ctx, "TestThrottle", 2, 100*time.Millisecond)
+	if err != nil || ok {
+		t.Errorf("expected rate limit check 3 to be false (exceeded limit 2), got ok=%v, err=%v", ok, err)
+	}
+
+	// Wait for period to expire
+	time.Sleep(150 * time.Millisecond)
+	ok, err = s.CheckRateLimit(ctx, "TestThrottle", 2, 100*time.Millisecond)
+	if err != nil || !ok {
+		t.Errorf("expected rate limit check to reset after expiration, got ok=%v, err=%v", ok, err)
+	}
+
+	// 3. Test PostponeJob
+	err = s.PostponeJob(ctx, env.JobID, env.Queue, 1*time.Second)
+	if err != nil {
+		t.Fatalf("PostponeJob failed: %v", err)
+	}
+
+	var status string
+	var runAt *time.Time
+	err = db.QueryRowContext(ctx, "SELECT status, run_at FROM runiq_jobs WHERE job_id = $1", env.JobID).Scan(&status, &runAt)
+	if err != nil {
+		t.Fatalf("failed to query job: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("expected status to be 'pending', got '%s'", status)
+	}
+	if runAt == nil {
+		t.Error("expected run_at to be set")
+	}
+}
+
+func assertRedisThrottling(t *testing.T, ctx context.Context, s queue.Storage, client *redis.Client) {
+	client.FlushAll(ctx)
+
+	// 1. Test GetRunningJobsCount
+	env := &queue.JobEnvelope{
+		JobID: "job-throttle-r1",
+		Queue: "default",
+		Name:  "TestThrottle",
+		Args:  []byte("{}"),
+	}
+	if err := s.Enqueue(ctx, env); err != nil {
+		t.Fatalf("failed to enqueue: %v", err)
+	}
+
+	// Move job to active in Redis (simulate dequeue)
+	_, err := s.Dequeue(ctx, env.Queue)
+	if err != nil {
+		t.Fatalf("dequeue failed: %v", err)
+	}
+
+	count, err := s.GetRunningJobsCount(ctx, "TestThrottle")
+	if err != nil {
+		t.Fatalf("GetRunningJobsCount failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 running job, got %d", count)
+	}
+
+	// 2. Test CheckRateLimit
+	ok, err := s.CheckRateLimit(ctx, "TestThrottle", 2, 100*time.Millisecond)
+	if err != nil || !ok {
+		t.Errorf("expected rate limit check 1 to be true, got ok=%v, err=%v", ok, err)
+	}
+	ok, err = s.CheckRateLimit(ctx, "TestThrottle", 2, 100*time.Millisecond)
+	if err != nil || !ok {
+		t.Errorf("expected rate limit check 2 to be true, got ok=%v, err=%v", ok, err)
+	}
+	ok, err = s.CheckRateLimit(ctx, "TestThrottle", 2, 100*time.Millisecond)
+	if err != nil || ok {
+		t.Errorf("expected rate limit check 3 to be false (exceeded limit 2), got ok=%v, err=%v", ok, err)
+	}
+
+	// Wait for period to expire
+	time.Sleep(150 * time.Millisecond)
+	ok, err = s.CheckRateLimit(ctx, "TestThrottle", 2, 100*time.Millisecond)
+	if err != nil || !ok {
+		t.Errorf("expected rate limit check to reset after expiration, got ok=%v, err=%v", ok, err)
+	}
+
+	// 3. Test PostponeJob
+	err = s.PostponeJob(ctx, env.JobID, env.Queue, 1*time.Second)
+	if err != nil {
+		t.Fatalf("PostponeJob failed: %v", err)
+	}
+
+	// Job should be removed from active
+	isActive, err := client.SIsMember(ctx, "runiq:active:"+env.Queue, env.JobID).Result()
+	if err != nil || isActive {
+		t.Errorf("expected job to be removed from active, got isActive=%v, err=%v", isActive, err)
+	}
+
+	// Job should be in scheduled ZSet
+	score, err := client.ZScore(ctx, "runiq:scheduled:"+env.Queue, env.JobID).Result()
+	if err != nil || score <= 0 {
+		t.Errorf("expected job to be in scheduled ZSet, got score=%v, err=%v", score, err)
+	}
+}
+
 
 

@@ -263,3 +263,88 @@ func TestWorkerProcessRegistration(t *testing.T) {
 	}
 }
 
+// TestWorkerPoolMaxConcurrency validates that when a job name exceeds its configured max concurrency, it is postponed and not executed.
+func TestWorkerPoolMaxConcurrency(t *testing.T) {
+	fakeStore := &FakeStorage{}
+	fakeStore.RunningCountToReturn = map[string]int{
+		"LimitJob": 6, // exceeds maxConcurrency = 5
+	}
+
+	job := &trackableJob{}
+	pool := queue.NewWorkerPool(fakeStore, 1)
+	// Register with Max Concurrency option
+	pool.Register("LimitJob", job, queue.WithMaxConcurrency(5))
+
+	env := &queue.JobEnvelope{
+		JobID: "job-limit-1",
+		Queue: "default",
+		Name:  "LimitJob",
+		Args:  []byte("{}"),
+	}
+	_ = fakeStore.Enqueue(context.Background(), env)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = pool.Start(ctx, "default")
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	job.mu.Lock()
+	executed := job.executed
+	job.mu.Unlock()
+
+	if executed {
+		t.Error("expected job to be throttled (postponed) due to concurrency limit, but it executed")
+	}
+
+	if len(fakeStore.Postponed) != 1 || fakeStore.Postponed[0] != "job-limit-1" {
+		t.Errorf("expected job-limit-1 to be postponed, got %v", fakeStore.Postponed)
+	}
+}
+
+// TestWorkerPoolRateLimit validates that when a job name exceeds its configured rate limit, it is postponed and not executed.
+func TestWorkerPoolRateLimit(t *testing.T) {
+	fakeStore := &FakeStorage{}
+	fakeStore.RateLimitToReturn = map[string]bool{
+		"RateJob": false, // Rate limit exceeded
+	}
+
+	job := &trackableJob{}
+	pool := queue.NewWorkerPool(fakeStore, 1)
+	// Register with Rate Limit option
+	pool.Register("RateJob", job, queue.WithRateLimit(10, time.Second))
+
+	env := &queue.JobEnvelope{
+		JobID: "job-rate-1",
+		Queue: "default",
+		Name:  "RateJob",
+		Args:  []byte("{}"),
+	}
+	_ = fakeStore.Enqueue(context.Background(), env)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = pool.Start(ctx, "default")
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	job.mu.Lock()
+	executed := job.executed
+	job.mu.Unlock()
+
+	if executed {
+		t.Error("expected job to be throttled (postponed) due to rate limit, but it executed")
+	}
+
+	if len(fakeStore.Postponed) != 1 || fakeStore.Postponed[0] != "job-rate-1" {
+		t.Errorf("expected job-rate-1 to be postponed, got %v", fakeStore.Postponed)
+	}
+}
+
+

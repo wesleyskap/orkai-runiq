@@ -126,6 +126,15 @@ type Storage interface {
  
 	// LockCronExecution attempts to acquire a unique execution lock for a cron job at a specific minute.
 	LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error)
+
+	// GetRunningJobsCount returns the number of currently running jobs with the specified name.
+	GetRunningJobsCount(ctx context.Context, jobName string) (int, error)
+
+	// CheckRateLimit checks and increments/updates the rate limit window for a job name.
+	CheckRateLimit(ctx context.Context, jobName string, limit int, period time.Duration) (bool, error)
+
+	// PostponeJob postpones a job to be executed in the future without failing it.
+	PostponeJob(ctx context.Context, jobID string, queueName string, delay time.Duration) error
 }
 
 // CronJob represents a scheduled recurring task definition.

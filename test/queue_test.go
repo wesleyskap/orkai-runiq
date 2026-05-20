@@ -12,15 +12,18 @@ import (
 
 // FakeStorage implements queue.Storage interface for testing purposes.
 type FakeStorage struct {
-	Enqueued      []*queue.JobEnvelope
-	Acked         []string
-	Failed        map[string]error
-	StatsToReturn *queue.Stats
-	Retried       []string
-	Cancelled     []string
-	Cleared       []string
-	Processes     []queue.ProcessInfo
-	Heartbeats    []string
+	Enqueued             []*queue.JobEnvelope
+	Acked                []string
+	Failed               map[string]error
+	StatsToReturn        *queue.Stats
+	Retried              []string
+	Cancelled            []string
+	Cleared              []string
+	Processes            []queue.ProcessInfo
+	Heartbeats           []string
+	RunningCountToReturn map[string]int
+	RateLimitToReturn    map[string]bool
+	Postponed            []string
 }
 
 func (f *FakeStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -92,6 +95,27 @@ func (f *FakeStorage) GetActiveProcesses(ctx context.Context) ([]queue.ProcessIn
 
 func (f *FakeStorage) LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error) {
 	return true, nil
+}
+
+func (f *FakeStorage) GetRunningJobsCount(ctx context.Context, jobName string) (int, error) {
+	if f.RunningCountToReturn != nil {
+		return f.RunningCountToReturn[jobName], nil
+	}
+	return 0, nil
+}
+
+func (f *FakeStorage) CheckRateLimit(ctx context.Context, jobName string, limit int, period time.Duration) (bool, error) {
+	if f.RateLimitToReturn != nil {
+		if val, ok := f.RateLimitToReturn[jobName]; ok {
+			return val, nil
+		}
+	}
+	return true, nil
+}
+
+func (f *FakeStorage) PostponeJob(ctx context.Context, jobID string, queueName string, delay time.Duration) error {
+	f.Postponed = append(f.Postponed, jobID)
+	return nil
 }
 
 // DummyJob implements queue.Job for verification.

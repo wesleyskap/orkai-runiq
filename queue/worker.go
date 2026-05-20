@@ -9,6 +9,34 @@ import (
 	"time"
 )
 
+type handlerConfig struct {
+	maxConcurrency int
+	rateLimit      int
+	ratePeriod     time.Duration
+}
+
+// HandlerOption configures throttling parameters for registered job handlers.
+type HandlerOption func(*handlerConfig)
+
+// WithMaxConcurrency configures the maximum global concurrency limit for a job.
+// Usage example:
+//	pool.Register("Payment", job, queue.WithMaxConcurrency(5))
+func WithMaxConcurrency(max int) HandlerOption {
+	return func(cfg *handlerConfig) {
+		cfg.maxConcurrency = max
+	}
+}
+
+// WithRateLimit configures the maximum execution rate limit for a job.
+// Usage example:
+//	pool.Register("SMS", job, queue.WithRateLimit(100, time.Minute))
+func WithRateLimit(limit int, period time.Duration) HandlerOption {
+	return func(cfg *handlerConfig) {
+		cfg.rateLimit = limit
+		cfg.ratePeriod = period
+	}
+}
+
 // WorkerPool processes jobs concurrently from the storage backend.
 type WorkerPool struct {
 	firstQueues  []string
@@ -18,6 +46,7 @@ type WorkerPool struct {
 	tracer       Tracer
 	processID    string
 	registry     map[string]Job
+	configs      map[string]handlerConfig
 	weights      map[string]int
 	fetchCounter uint64
 	concurrency  int
@@ -40,6 +69,7 @@ func NewWorkerPool(storage Storage, concurrency int, opts ...WorkerOption) *Work
 		tracer:      &defaultTracer{},
 		processID:   processID,
 		registry:    make(map[string]Job),
+		configs:     make(map[string]handlerConfig),
 		weights:     make(map[string]int),
 		concurrency: concurrency,
 	}
@@ -73,9 +103,14 @@ func WithQueueWeights(weights map[string]int) WorkerOption {
 	}
 }
 
-// Register maps a job name to a Job implementation.
-func (w *WorkerPool) Register(name string, job Job) {
+// Register maps a job name to a Job implementation with optional rate limiting/concurrency.
+func (w *WorkerPool) Register(name string, job Job, opts ...HandlerOption) {
 	w.registry[name] = job
+	var cfg handlerConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	w.configs[name] = cfg
 }
 
 // RegisterCron registers a recurring task under the specified cron spec.
@@ -185,7 +220,13 @@ func (w *WorkerPool) fetchNext(ctx context.Context, queues []string) (*JobEnvelo
 		searchOrder := w.buildSearchOrder(queues)
 		for _, q := range searchOrder {
 			env, err := w.storage.Dequeue(ctx, q)
-			if err == nil && env != nil {
+			if err != nil {
+				return nil, err
+			}
+			if env == nil {
+				continue
+			}
+			if allowed := w.checkLimitsAndPostpone(ctx, env); allowed {
 				return env, nil
 			}
 		}
@@ -210,11 +251,44 @@ func (w *WorkerPool) buildSearchOrder(queues []string) []string {
 func (w *WorkerPool) fetchStrict(ctx context.Context, queues []string) (*JobEnvelope, error) {
 	for _, q := range queues {
 		env, err := w.storage.Dequeue(ctx, q)
-		if err == nil && env != nil {
+		if err != nil {
+			return nil, err
+		}
+		if env == nil {
+			continue
+		}
+		if allowed := w.checkLimitsAndPostpone(ctx, env); allowed {
 			return env, nil
 		}
 	}
 	return nil, nil
+}
+
+func (w *WorkerPool) checkLimitsAndPostpone(ctx context.Context, env *JobEnvelope) bool {
+	cfg, exists := w.configs[env.Name]
+	if !exists {
+		return true
+	}
+
+	// 1. Max Concurrency check
+	if cfg.maxConcurrency > 0 {
+		count, err := w.storage.GetRunningJobsCount(ctx, env.Name)
+		if err == nil && count > cfg.maxConcurrency {
+			_ = w.storage.PostponeJob(ctx, env.JobID, env.Queue, 1*time.Second)
+			return false
+		}
+	}
+
+	// 2. Rate Limit check
+	if cfg.rateLimit > 0 && cfg.ratePeriod > 0 {
+		ok, err := w.storage.CheckRateLimit(ctx, env.Name, cfg.rateLimit, cfg.ratePeriod)
+		if err == nil && !ok {
+			_ = w.storage.PostponeJob(ctx, env.JobID, env.Queue, 1*time.Second)
+			return false
+		}
+	}
+
+	return true
 }
 
 func (w *WorkerPool) executeJob(ctx context.Context, env *JobEnvelope) {

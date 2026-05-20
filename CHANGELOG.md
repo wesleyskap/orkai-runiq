@@ -2,10 +2,19 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [1.1.0] - 2026-05-20
+
+### Added
+- **Global Rate Limiting & Max Concurrency Throttling**: Implemented global/cluster-wide per-job limits.
+- **Storage driver additions**: Implemented `GetRunningJobsCount`, `CheckRateLimit` and `PostponeJob` in both PostgreSQL and Redis storage backends.
+- **Sliding Window Rate-Limiter**: Implemented a precise sliding window rate limiter in Redis (using sorted sets) and PostgreSQL (using a transactional locks log table).
+- **Non-blocking Postponement**: Jobs exceeding concurrency or rate limits are automatically postponed (via a 1-second scheduled delay) and worker pools continue to process other ready jobs.
+- **Test suite additions**: Integrated unit tests for concurrency/rate limiting and integration assertions for database drivers.
+
 ## [1.0.0] - 2026-05-20
 
 ### Added
-- **Dead Letter Queue (DLQ) & Poison Pill Inspector (Fase 7)**: Jobs exceeding `max_attempts` now transition to `'dead'` status instead of `'failed'`.
+- **Dead Letter Queue (DLQ) & Poison Pill Inspector**: Jobs exceeding `max_attempts` now transition to `'dead'` status instead of `'failed'`.
 - **Redis Storage Update**: Pushes permanently failed jobs to `runiq:dead:{queue}` list with LTrim capped at 50 elements.
 - **Postgres Storage Update**: Sets the status field to `'dead'` inside `runiq_jobs`.
 - **Dashboard UI SPA Enhancement**: Renamed tab, status card, and queue columns to "Dead (DLQ)", allowing error inspection and direct manual Retry/Cancel.

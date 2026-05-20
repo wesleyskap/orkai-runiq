@@ -16,10 +16,10 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 * **Job**: Interface with the Perform(ctx, args) signature which must be implemented by any background task.
 
 ### queue/postgres.go
-* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, tracking `run_at` scheduled times, moving jobs exceeding `max_attempts` to `'dead'` (DLQ) state, and calculating job stats (Pending, Active, Processed, and Dead/Failed).
+* **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, tracking `run_at` scheduled times, moving jobs exceeding `max_attempts` to `'dead'` (DLQ) state, calculating job stats (Pending, Active, Processed, and Dead/Failed), and enforcing concurrency/rate limits using a transactional rate limits log table.
 
 ### queue/redis.go
-* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, ZSets for future `run_at` schedules, isolating exhausted jobs in `runiq:dead:{queue}` lists (DLQ), and tracking queue stats (Pending, Active, Processed, and Dead/Failed) using dedicated Redis Lists.
+* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, ZSets for future `run_at` schedules, isolating exhausted jobs in `runiq:dead:{queue}` lists (DLQ), tracking queue stats (Pending, Active, Processed, and Dead/Failed) using dedicated Redis Lists, and enforcing concurrency/rate limits using sliding-window sorted sets.
 
 ### queue/client.go
 * **Client**: Client helper for enqueuing jobs with transparent Trace ID propagation.
@@ -225,6 +225,43 @@ pool := queue.NewWorkerPool(
 ```
 
 In the example above, `critical` has a weight of 3 and `default` has a weight of 1. During job fetches, the worker pool cycles search preference (yielding a 3:1 ratio of preference), ensuring that the `default` queue is checked first 25% of the time, while still polling all monitored queues to guarantee zero throughput lag.
+
+## Dead Letter Queue (DLQ)
+
+When a job repeatedly fails and exhausts its configured `MaxAttempts` (defaulting to 3 attempts), it is not simply deleted or left in a failed loop. Instead, Runiq automatically moves it to the **Dead Letter Queue (DLQ)** to act as a poison-pill inspector.
+
+- **PostgreSQL Storage**: The job's status field in the `runiq_jobs` table is transitioned to `'dead'`.
+- **Redis Storage**: The job envelope is pushed to a dedicated capped list `runiq:dead:{queue}`, keeping only the most recent 50 dead jobs to prevent memory bloat.
+
+The **Dashboard UI** provides a dedicated **Dead (DLQ)** tab to view dead jobs along with their error messages and stack traces. From there, administrators can inspect the failure reason and choose to **Retry** the job immediately (which resets its attempts counter and places it back in the queue) or **Cancel** it permanently.
+
+## Concurrency Throttling & Rate Limiting
+
+Runiq supports global, cluster-wide rate limiting and concurrency throttling per job handler. These settings are registered at the `WorkerPool` level and enforced across all active workers using the storage backend.
+
+- **Max Concurrency Throttling**: Restricts the maximum number of instances of a specific job executing concurrently across all worker pools in the cluster.
+- **Rate Limiting**: Restricts the maximum number of job executions allowed within a specific moving time window (sliding window) across all worker pools in the cluster.
+
+To configure these limits, pass `WithMaxConcurrency` and `WithRateLimit` options during handler registration:
+
+```go
+// Register with a maximum of 5 concurrent executions globally
+pool.Register("PaymentJob", &PaymentJob{}, queue.WithMaxConcurrency(5))
+
+// Register with a rate limit of 100 executions per minute globally
+pool.Register("SMSNotification", &SMSNotificationJob{}, queue.WithRateLimit(100, time.Minute))
+
+// Combine both options
+pool.Register("ExternalAPI", &ExternalAPIJob{}, 
+	queue.WithMaxConcurrency(2),
+	queue.WithRateLimit(50, time.Hour),
+)
+```
+
+### Non-Blocking Postponement
+If a job is dequeued and Runiq detects that it exceeds either the concurrency limit or the rate limit, the job is **not blocked** in-memory. Instead:
+1. The worker automatically **postpones** the job by shifting it to a scheduled state with a short **1-second delay**.
+2. The worker pool immediately continues processing other non-throttled or ready jobs, maintaining maximum throughput and resource utilization across the cluster.
 
 ## Administration API & Dashboard Actions
 
