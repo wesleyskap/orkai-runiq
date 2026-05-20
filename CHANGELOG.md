@@ -2,6 +2,12 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [0.12.0] - 2026-05-20
+
+### Added
+- **EnqueueUnique client helper**: Added `EnqueueUnique` method to `queue.Client` to simplify scheduling unique jobs with custom lock keys and expiration.
+- Downgraded Go version constraint to `1.22` and aligned OpenTelemetry to `v1.30.0` (SDK `v1.27.0`) and `golang.org/x/sys` to `v0.20.0` for full Go 1.22.0 compatibility.
+
 ## [0.11.0] - 2026-05-19
 
 ### Added

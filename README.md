@@ -185,6 +185,9 @@ envelope := &queue.JobEnvelope{
 	UniqueTTL: 10 * time.Minute,             // Uniqueness lock duration
 }
 err := storage.Enqueue(ctx, envelope) // Returns queue.ErrDuplicateJob if a lock already exists
+
+// Or using the client helper:
+err = client.EnqueueUnique(ctx, "default", "SendEmail", []byte(`{"to":"user@example.com"}`), "user-email-123", 10*time.Minute)
 ```
 
 Locks are automatically released when the job completes successfully (`Ack`), fails permanently (exceeds maximum attempts), or is explicitly cancelled via the dashboard or API.
@@ -232,6 +235,12 @@ go test ./... -v
 
 Expected output:
 ```text
+=== RUN   TestWorkerPoolWeightedRotation
+--- PASS: TestWorkerPoolWeightedRotation (0.00s)
+=== RUN   TestWorkerPoolStrictPriorityFallback
+--- PASS: TestWorkerPoolStrictPriorityFallback (0.00s)
+PASS
+ok  	github.com/wesleyskap/orkai-runiq/queue	0.386s
 === RUN   TestJobEnvelopeSerialization
 --- PASS: TestJobEnvelopeSerialization (0.00s)
 === RUN   TestJobInterfaceConformance
@@ -240,23 +249,21 @@ Expected output:
 --- PASS: TestDashboardStatsEndpoint (0.00s)
 === RUN   TestDashboardUIEndpoint
 --- PASS: TestDashboardUIEndpoint (0.03s)
-=== RUN   TestPostgresStorageFlow
-=== RUN   TestPostgresStorageFlow/EnqueueAndDequeue
-=== RUN   TestPostgresStorageFlow/SkipLockedConcurrency
---- PASS: TestPostgresStorageFlow (0.05s)
-    --- PASS: TestPostgresStorageFlow/EnqueueAndDequeue (0.00s)
-    --- PASS: TestPostgresStorageFlow/SkipLockedConcurrency (0.02s)
-=== RUN   TestRedisStorageFlow
-=== RUN   TestRedisStorageFlow/EnqueueAndDequeue
---- PASS: TestRedisStorageFlow (0.02s)
-    --- PASS: TestRedisStorageFlow/EnqueueAndDequeue (0.00s)
+=== RUN   TestAdminEndpoints
+--- PASS: TestAdminEndpoints (0.00s)
 === RUN   TestClientTraceExtraction
 --- PASS: TestClientTraceExtraction (0.00s)
+=== RUN   TestClientEnqueueUnique
+--- PASS: TestClientEnqueueUnique (0.00s)
 === RUN   TestWorkerPoolExecution
 --- PASS: TestWorkerPoolExecution (0.10s)
 === RUN   TestWorkerPoolPanicRecovery
 --- PASS: TestWorkerPoolPanicRecovery (0.10s)
+=== RUN   TestClientScheduling
+--- PASS: TestClientScheduling (0.00s)
+=== RUN   TestWorkerProcessRegistration
+--- PASS: TestWorkerProcessRegistration (0.05s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/test	0.837s
+ok  	github.com/wesleyskap/orkai-runiq/test	2.589s
 ```
 

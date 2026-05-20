@@ -78,6 +78,25 @@ func (c *Client) EnqueueAt(ctx context.Context, queueName, name string, args []b
 	return c.storage.Enqueue(ctx, env)
 }
 
+// EnqueueUnique schedules a unique job that is protected by a uniqueness lock.
+func (c *Client) EnqueueUnique(ctx context.Context, queueName, name string, args []byte, uniqueKey string, uniqueTTL time.Duration) error {
+	traceID, spanID := c.tracer.ExtractTrace(ctx)
+	env := &JobEnvelope{
+		JobID:       generateJobID(),
+		Queue:       queueName,
+		Name:        name,
+		Args:        args,
+		MaxAttempts: 3,
+		UniqueKey:   uniqueKey,
+		UniqueTTL:   uniqueTTL,
+		TraceContext: TraceContext{
+			TraceID: traceID,
+			SpanID:  spanID,
+		},
+	}
+	return c.storage.Enqueue(ctx, env)
+}
+
 func generateJobID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)

@@ -89,6 +89,30 @@ func TestClientTraceExtraction(t *testing.T) {
 	}
 }
 
+// TestClientEnqueueUnique verifies that EnqueueUnique properly propagates UniqueKey and UniqueTTL.
+func TestClientEnqueueUnique(t *testing.T) {
+	fakeStore := &FakeStorage{}
+	client := queue.NewClient(fakeStore)
+
+	ctx := context.Background()
+	err := client.EnqueueUnique(ctx, "default", "UniqueJob", []byte("{}"), "test-lock-key", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to EnqueueUnique: %v", err)
+	}
+
+	if len(fakeStore.Enqueued) != 1 {
+		t.Fatal("expected 1 job to be enqueued")
+	}
+
+	env := fakeStore.Enqueued[0]
+	if env.UniqueKey != "test-lock-key" {
+		t.Errorf("expected UniqueKey 'test-lock-key', got %q", env.UniqueKey)
+	}
+	if env.UniqueTTL != 5*time.Minute {
+		t.Errorf("expected UniqueTTL 5m, got %v", env.UniqueTTL)
+	}
+}
+
 // TestWorkerPoolExecution validates worker startup, context injection, and success telemetry.
 // Usage example:
 //	go test -v ./test/...
