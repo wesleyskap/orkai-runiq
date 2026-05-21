@@ -60,6 +60,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/queues/clear", s.handleClearQueue)
 	mux.HandleFunc("/api/queues/pause", s.handlePauseQueue)
 	mux.HandleFunc("/api/queues/resume", s.handleResumeQueue)
+	mux.HandleFunc("/api/jobs/detail", s.handleJobDetail)
+	mux.HandleFunc("/api/jobs/failed/retry", s.handleRetryAllFailed)
+	mux.HandleFunc("/api/jobs/failed/purge", s.handlePurgeAllFailed)
 
 	sub, err := fs.Sub(assetsFS, "assets")
 	if err == nil {
@@ -183,3 +186,47 @@ func (s *Server) handleResumeQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 }
+
+func (s *Server) handleJobDetail(w http.ResponseWriter, r *http.Request) {
+	jobID := r.URL.Query().Get("id")
+	if jobID == "" {
+		http.Error(w, "Missing job id parameter", http.StatusBadRequest)
+		return
+	}
+	env, err := s.storage.GetJobDetail(r.Context(), jobID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if env == nil {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(env)
+}
+
+func (s *Server) handleRetryAllFailed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.storage.RetryAllFailed(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handlePurgeAllFailed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.storage.PurgeAllFailed(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+

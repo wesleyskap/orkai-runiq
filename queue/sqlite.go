@@ -213,6 +213,14 @@ func createSqliteTables(ctx context.Context, db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS runiq_paused_queues (
 		queue TEXT PRIMARY KEY
 	);
+
+	CREATE TABLE IF NOT EXISTS runiq_cron_jobs (
+		name TEXT PRIMARY KEY,
+		expression TEXT NOT NULL,
+		queue TEXT NOT NULL,
+		payload TEXT NOT NULL,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := db.ExecContext(ctx, schema)
 	return err

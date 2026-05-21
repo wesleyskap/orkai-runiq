@@ -140,10 +140,16 @@ func (w *WorkerPool) RegisterCron(spec, queue, name string, payload []byte) {
 func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
 	w.setupWeightedQueues(queues)
 	w.registerProcess(ctx, queues)
+	if len(w.cronJobs) > 0 {
+		if err := w.storage.RegisterCronJobs(ctx, w.cronJobs); err != nil {
+			w.logger.Error(ctx, "failed to register cron jobs", err)
+		}
+	}
 	w.startBackgroundLoops(ctx, queues)
 	w.runProcessingLoop(ctx, queues)
 	return ctx.Err()
 }
+
 
 func (w *WorkerPool) setupWeightedQueues(queues []string) {
 	if len(w.weights) == 0 {

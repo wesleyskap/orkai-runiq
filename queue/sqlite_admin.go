@@ -198,6 +198,7 @@ func (s *SqliteStorage) GetStats(ctx context.Context) (*Stats, error) {
 	if err := s.fetchRecentJobs(ctx, &stats); err != nil {
 		return nil, err
 	}
+	_ = s.fetchCronJobs(ctx, &stats)
 	s.loadActiveProcesses(ctx, &stats)
 	return &stats, nil
 }
@@ -326,4 +327,78 @@ func (s *SqliteStorage) accumulateStats(stats *Stats, queueMap map[string]*Queue
 		stats.Processed += count
 		qs.Processed += count
 	}
+}
+
+func (s *SqliteStorage) fetchCronJobs(ctx context.Context, stats *Stats) error {
+	rows, err := s.db.QueryContext(ctx, "SELECT name, expression, queue, payload FROM runiq_cron_jobs ORDER BY name ASC")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cd CronJobDetail
+		if err := rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload); err == nil {
+			stats.CronJobs = append(stats.CronJobs, cd)
+		}
+	}
+	return nil
+}
+
+func (s *SqliteStorage) RegisterCronJobs(ctx context.Context, crons []CronJob) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	query := `
+		INSERT INTO runiq_cron_jobs (name, expression, queue, payload, updated_at)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (name) DO UPDATE SET
+			expression = excluded.expression,
+			queue = excluded.queue,
+			payload = excluded.payload,
+			updated_at = CURRENT_TIMESTAMP`
+	for _, c := range crons {
+		if _, err := tx.ExecContext(ctx, query, c.Name, c.Spec, c.Queue, string(c.Payload)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SqliteStorage) GetJobDetail(ctx context.Context, jobID string) (*JobEnvelope, error) {
+	var env JobEnvelope
+	var runAt time.Time
+	var traceID, spanID string
+	query := `
+		SELECT job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id, run_at
+		FROM runiq_jobs WHERE job_id = ?`
+	err := s.db.QueryRowContext(ctx, query, jobID).Scan(
+		&env.JobID, &env.Queue, &env.Name, &env.Args, &traceID, &spanID,
+		&env.Attempts, &env.MaxAttempts, &env.UniqueKey, &env.BatchID, &runAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	env.TraceContext = TraceContext{TraceID: traceID, SpanID: spanID}
+	env.RunAt = &runAt
+	return &env, nil
+}
+
+func (s *SqliteStorage) RetryAllFailed(ctx context.Context) error {
+	query := `
+		UPDATE runiq_jobs
+		SET status = 'pending', attempts = 0, run_at = CURRENT_TIMESTAMP, error_message = ''
+		WHERE status IN ('dead', 'failed')`
+	_, err := s.db.ExecContext(ctx, query)
+	return err
+}
+
+func (s *SqliteStorage) PurgeAllFailed(ctx context.Context) error {
+	query := "DELETE FROM runiq_jobs WHERE status IN ('dead', 'failed')"
+	_, err := s.db.ExecContext(ctx, query)
+	return err
 }

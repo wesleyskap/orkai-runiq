@@ -202,6 +202,14 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS runiq_paused_queues (
 		queue VARCHAR(255) PRIMARY KEY
 	);
+
+	CREATE TABLE IF NOT EXISTS runiq_cron_jobs (
+		name VARCHAR(255) PRIMARY KEY,
+		expression VARCHAR(255) NOT NULL,
+		queue VARCHAR(255) NOT NULL,
+		payload TEXT NOT NULL,
+		updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := db.ExecContext(ctx, schema)
 	return err

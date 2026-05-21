@@ -61,6 +61,11 @@ func TestSqliteStorageFlow(t *testing.T) {
 		clearSqliteJobsTable(t, db)
 		assertSqliteBatches(t, ctx, storage, db)
 	})
+
+	t.Run("NewFeaturesV240", func(t *testing.T) {
+		clearSqliteJobsTable(t, db)
+		assertSqliteNewFeatures(t, ctx, storage, db)
+	})
 }
 
 func clearSqliteJobsTable(t *testing.T, db *sql.DB) {
@@ -434,5 +439,74 @@ func assertSqliteBatches(t *testing.T, ctx context.Context, s *queue.SqliteStora
 	}
 	if deqCallback.Name != "CallbackJob" {
 		t.Errorf("expected callback job name to be 'CallbackJob', got '%s'", deqCallback.Name)
+	}
+}
+
+func assertSqliteNewFeatures(t *testing.T, ctx context.Context, s *queue.SqliteStorage, db *sql.DB) {
+	t.Run("CronRegistration", func(t *testing.T) { assertSqliteCron(t, ctx, s) })
+	t.Run("JobDetail", func(t *testing.T) { assertSqliteJobDetail(t, ctx, s) })
+	t.Run("BulkRetryPurge", func(t *testing.T) { assertSqliteBulkActions(t, ctx, s, db) })
+}
+
+func assertSqliteCron(t *testing.T, ctx context.Context, s *queue.SqliteStorage) {
+	crons := []queue.CronJob{
+		{Name: "test-cron", Spec: "*/5 * * * *", Queue: "default", Payload: []byte(`{"hello":"world"}`)},
+	}
+	if err := s.RegisterCronJobs(ctx, crons); err != nil {
+		t.Fatalf("failed to register cron: %v", err)
+	}
+	stats, err := s.GetStats(ctx)
+	if err != nil || len(stats.CronJobs) != 1 {
+		t.Fatalf("failed to get stats with cron: %v", err)
+	}
+	if stats.CronJobs[0].Name != "test-cron" || stats.CronJobs[0].Payload != `{"hello":"world"}` {
+		t.Errorf("mismatched cron stats: %+v", stats.CronJobs[0])
+	}
+}
+
+func assertSqliteJobDetail(t *testing.T, ctx context.Context, s *queue.SqliteStorage) {
+	env := &queue.JobEnvelope{JobID: "detail-1", Queue: "default", Name: "Job", Args: []byte(`{"a":1}`)}
+	if err := s.Enqueue(ctx, env); err != nil {
+		t.Fatalf("failed to enqueue: %v", err)
+	}
+	detail, err := s.GetJobDetail(ctx, "detail-1")
+	if err != nil || detail == nil {
+		t.Fatalf("failed to get job detail: %v", err)
+	}
+	if string(detail.Args) != `{"a":1}` {
+		t.Errorf("expected payload '{\"a\":1}', got %s", detail.Args)
+	}
+}
+
+func assertSqliteBulkActions(t *testing.T, ctx context.Context, s *queue.SqliteStorage, db *sql.DB) {
+	env1 := &queue.JobEnvelope{JobID: "b1", Queue: "q", Name: "Job", Args: []byte("{}")}
+	env2 := &queue.JobEnvelope{JobID: "b2", Queue: "q", Name: "Job", Args: []byte("{}")}
+	_ = s.Enqueue(ctx, env1)
+	_ = s.Enqueue(ctx, env2)
+	assertBulkRetry(t, ctx, s, db)
+	assertBulkPurge(t, ctx, s, db)
+}
+
+func assertBulkRetry(t *testing.T, ctx context.Context, s *queue.SqliteStorage, db *sql.DB) {
+	_, _ = db.Exec("UPDATE runiq_jobs SET status = 'failed' WHERE job_id IN ('b1', 'b2')")
+	if err := s.RetryAllFailed(ctx); err != nil {
+		t.Fatalf("RetryAllFailed failed: %v", err)
+	}
+	var count int
+	_ = db.QueryRow("SELECT COUNT(*) FROM runiq_jobs WHERE status = 'pending' AND job_id IN ('b1', 'b2')").Scan(&count)
+	if count != 2 {
+		t.Errorf("expected 2 pending jobs, got %d", count)
+	}
+}
+
+func assertBulkPurge(t *testing.T, ctx context.Context, s *queue.SqliteStorage, db *sql.DB) {
+	_, _ = db.Exec("UPDATE runiq_jobs SET status = 'dead' WHERE job_id IN ('b1', 'b2')")
+	if err := s.PurgeAllFailed(ctx); err != nil {
+		t.Fatalf("PurgeAllFailed failed: %v", err)
+	}
+	var count int
+	_ = db.QueryRow("SELECT COUNT(*) FROM runiq_jobs WHERE job_id IN ('b1', 'b2')").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected 0 jobs, got %d", count)
 	}
 }

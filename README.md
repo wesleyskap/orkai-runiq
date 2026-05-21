@@ -217,6 +217,8 @@ pool.RegisterCron("0 0 * * *", "default", "DailyReport", []byte(`{"format":"pdf"
 
 The background scheduler runs automatically inside the `WorkerPool`. At the start of each matched minute, it attempts to acquire a lock for that minute. Only one worker instance in the cluster will succeed and enqueue the task.
 
+All active registered cron schedules (including target queues and arguments) are saved in the storage backend and displayed in the **Cron Jobs** tab on the dashboard, making scheduled workloads fully visible.
+
 ## Active Worker Pool Monitoring
 
 When a `WorkerPool` starts, it automatically registers itself with the storage driver using a unique process identifier (comprising the hostname, PID, and a random token). The worker pool then maintains a periodic background heartbeat ticker (every 5 seconds) to signal its health.
@@ -265,7 +267,10 @@ When a job repeatedly fails and exhausts its configured `MaxAttempts` (defaultin
 - **PostgreSQL Storage**: The job's status field in the `runiq_jobs` table is transitioned to `'dead'`.
 - **Redis Storage**: The job envelope is pushed to a dedicated capped list `runiq:dead:{queue}`, keeping only the most recent 50 dead jobs to prevent memory bloat.
 
-The **Dashboard UI** provides a dedicated **Dead (DLQ)** tab to view dead jobs along with their error messages and stack traces. From there, administrators can inspect the failure reason and choose to **Retry** the job immediately (which resets its attempts counter and places it back in the queue) or **Cancel** it permanently.
+The **Dashboard UI** provides a dedicated **Dead (DLQ)** tab to view dead jobs along with their error messages and stack traces. From there, administrators can:
+- **Inspect Arguments & Errors**: Click on any job row to open the **Job Details Modal** which shows raw JSON-formatted arguments and complete error backtraces, with a convenient button to copy the payload to the clipboard.
+- **Single Actions**: Choose to **Retry** a job immediately (which resets its attempts counter and places it back in the queue) or **Cancel** it permanently.
+- **Bulk Actions**: Perform batch management with the **Retry All** and **Purge All** buttons to clean or queue all failed jobs at once.
 
 ## Concurrency Throttling & Rate Limiting
 
@@ -358,8 +363,11 @@ You can pause and resume queues directly through:
 
 Runiq's dashboard contains interactive buttons to manage tasks directly. The server exposes the following endpoints:
 
+* **Get Job Details**: `GET /api/jobs/detail?id=<job_id>` retrieves the raw details of a job, including raw arguments and full error logs.
 * **Retry Job**: `POST /api/jobs/retry?id=<job_id>` resets the attempts counter and schedules a failed job for immediate retry.
 * **Cancel Job**: `POST /api/jobs/cancel?id=<job_id>` deletes a pending, scheduled, or failed job from the queue.
+* **Bulk Retry Failed**: `POST /api/jobs/failed/retry` retries all failed and DLQ tasks globally.
+* **Bulk Purge Failed**: `POST /api/jobs/failed/purge` permanently deletes all failed and DLQ tasks globally.
 * **Clear Queue**: `POST /api/queues/clear?name=<queue_name>` removes all pending, active, scheduled, completed, and failed jobs from a specific queue.
 * **Pause Queue**: `POST /api/queues/pause?name=<queue_name>` pauses job processing from the specified queue.
 * **Resume Queue**: `POST /api/queues/resume?name=<queue_name>` resumes job processing from the specified queue.
@@ -449,6 +457,9 @@ To build and save the binary inside your project folder:
   ```powershell
   go build -o runiq.exe github.com/wesleyskap/orkai-runiq/v2/cmd/runiq
   ```
+
+> [!NOTE]
+> If Go complains about missing `go.sum` entries for packages like `github.com/glebarez/go-sqlite` or `github.com/lib/pq` (because they are imported by the CLI binary but not by your application library), run `go get github.com/wesleyskap/orkai-runiq/v2/cmd/runiq` first to download and checksum all CLI-specific dependencies.
 
 #### Option B: Run on-the-fly (Without Compiling)
 To run the CLI instantly without generating an executable file in your workspace:

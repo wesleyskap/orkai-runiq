@@ -60,15 +60,24 @@ type QueueStats struct {
 	Paused    bool   `json:"paused"`
 }
 
+// CronJobDetail represents the serialized metadata for active cron jobs in the dashboard.
+type CronJobDetail struct {
+	Name       string `json:"name"`
+	Expression string `json:"expression"`
+	Queue      string `json:"queue"`
+	Payload    string `json:"payload"`
+}
+
 // Stats holds aggregate and queue-specific job counts.
 type Stats struct {
-	Queues    []QueueStats  `json:"queues"`
-	Jobs      []JobDetail   `json:"jobs,omitempty"`
-	Processes []ProcessInfo `json:"processes,omitempty"`
-	Pending   int64         `json:"pending"`
-	Running   int64         `json:"running"`
-	Failed    int64         `json:"failed"`
-	Processed int64         `json:"processed"`
+	Queues    []QueueStats    `json:"queues"`
+	Jobs      []JobDetail     `json:"jobs,omitempty"`
+	Processes []ProcessInfo   `json:"processes,omitempty"`
+	CronJobs  []CronJobDetail `json:"cron_jobs,omitempty"`
+	Pending   int64           `json:"pending"`
+	Running   int64           `json:"running"`
+	Failed    int64           `json:"failed"`
+	Processed int64           `json:"processed"`
 }
 
 // JobQueue defines the core job lifecycle operations.
@@ -135,6 +144,12 @@ type JobAdmin interface {
 
 	// ResumeQueue resumes processing of a specific queue.
 	ResumeQueue(ctx context.Context, queue string) error
+
+	// RetryAllFailed resets all failed (dead/failed) jobs back to pending state.
+	RetryAllFailed(ctx context.Context) error
+
+	// PurgeAllFailed permanently deletes all failed (dead/failed) jobs.
+	PurgeAllFailed(ctx context.Context) error
 }
 
 // ProcessRegistry defines worker process lifecycle operations.
@@ -184,6 +199,7 @@ type WorkerPoolStorage interface {
 	CronLocker
 	JobThrottler
 	IsQueuePaused(ctx context.Context, queue string) (bool, error)
+	RegisterCronJobs(ctx context.Context, crons []CronJob) error
 }
 
 // ClientStorage is the storage interface required by Client.
@@ -196,6 +212,7 @@ type ClientStorage interface {
 type ServerStorage interface {
 	JobStats
 	JobAdmin
+	GetJobDetail(ctx context.Context, jobID string) (*JobEnvelope, error)
 }
 
 // CronJob represents a scheduled recurring task definition.

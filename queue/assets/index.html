@@ -7,330 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-color: #0b0f19;
-            --panel-bg: rgba(20, 26, 46, 0.6);
-            --border-color: rgba(255, 255, 255, 0.08);
-            --text-main: #f3f4f6;
-            --text-muted: #9ca3af;
-            --primary: #6366f1;
-            --pending: #38bdf8;
-            --running: #34d399;
-            --dead: #f87171;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            font-family: 'Outfit', sans-serif;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 2rem 1rem;
-            overflow-x: hidden;
-            background-image: radial-gradient(circle at 50% -20%, rgba(99, 102, 241, 0.15) 0%, transparent 50%);
-        }
-
-        header {
-            width: 100%;
-            max-width: 1000px;
-            margin-bottom: 2.5rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        h1 {
-            font-size: 2rem;
-            font-weight: 800;
-            background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            letter-spacing: -0.025em;
-        }
-
-        .badge {
-            background: rgba(99, 102, 241, 0.1);
-            border: 1px solid rgba(99, 102, 241, 0.2);
-            color: #818cf8;
-            padding: 0.35rem 0.75rem;
-            border-radius: 9999px;
-            font-size: 0.875rem;
-            font-weight: 600;
-        }
-
-        main {
-            width: 100%;
-            max-width: 1000px;
-            display: grid;
-            gap: 2rem;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 1.5rem;
-        }
-
-        .card {
-            background: var(--panel-bg);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-            padding: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            position: relative;
-            overflow: hidden;
-            transition: transform 0.2s ease, border-color 0.2s ease;
-        }
-
-        .card:hover {
-            transform: translateY(-2px);
-            border-color: rgba(255, 255, 255, 0.15);
-        }
-
-        .card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 4px;
-            height: 100%;
-        }
-
-        .card.pending::before { background-color: var(--pending); }
-        .card.running::before { background-color: var(--running); }
-        .card.processed::before { background-color: var(--running); }
-        .card.dead::before { background-color: var(--dead); }
-
-        .card-title {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 0.5rem;
-        }
-
-        .card-value {
-            font-size: 2.5rem;
-            font-weight: 800;
-            line-height: 1;
-        }
-
-        .card.pending .card-value { color: var(--pending); text-shadow: 0 0 10px rgba(56, 189, 248, 0.2); }
-        .card.running .card-value { color: var(--running); text-shadow: 0 0 10px rgba(52, 211, 153, 0.2); }
-        .card.processed .card-value { color: var(--running); text-shadow: 0 0 10px rgba(52, 211, 153, 0.2); }
-        .card.dead .card-value { color: var(--dead); text-shadow: 0 0 10px rgba(248, 113, 113, 0.2); }
-
-        .table-container {
-            background: var(--panel-bg);
-            backdrop-filter: blur(12px);
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-            overflow: hidden;
-        }
-
-        .table-header {
-            padding: 1.25rem 1.5rem;
-            border-bottom: 1px solid var(--border-color);
-            font-weight: 600;
-            font-size: 1.1rem;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            text-align: left;
-        }
-
-        th {
-            background: rgba(255, 255, 255, 0.02);
-            padding: 1rem 1.5rem;
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-muted);
-            border-bottom: 1px solid var(--border-color);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        td {
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid var(--border-color);
-            font-size: 0.95rem;
-        }
-
-        tr:last-child td {
-            border-bottom: none;
-        }
-
-        tr:hover td {
-            background: rgba(255, 255, 255, 0.01);
-        }
-
-        .empty-state {
-            padding: 3rem 1.5rem;
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 1rem;
-        }
-
-        .pulse {
-            width: 8px;
-            height: 8px;
-            background-color: var(--running);
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 0.5rem;
-            box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7);
-            animation: pulse-animation 1.5s infinite;
-        }
-
-        .tabs {
-            display: flex;
-            gap: 0.5rem;
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid var(--border-color);
-            background: rgba(255, 255, 255, 0.01);
-        }
-
-        .tab-btn {
-            background: transparent;
-            border: none;
-            color: var(--text-muted);
-            padding: 0.5rem 1rem;
-            font-size: 0.9rem;
-            font-weight: 600;
-            cursor: pointer;
-            border-radius: 8px;
-            transition: all 0.2s ease;
-        }
-
-        .tab-btn:hover {
-            color: var(--text-main);
-            background: rgba(255, 255, 255, 0.04);
-        }
-
-        .tab-btn.active {
-            color: var(--primary);
-            background: rgba(99, 102, 241, 0.1);
-            border: 1px solid rgba(99, 102, 241, 0.2);
-        }
-
-        .trace-id {
-            font-family: monospace;
-            background: rgba(99, 102, 241, 0.08);
-            border: 1px solid rgba(99, 102, 241, 0.15);
-            color: #a5b4fc;
-            padding: 0.2rem 0.5rem;
-            border-radius: 6px;
-            font-size: 0.8rem;
-        }
-
-        .error-msg {
-            color: var(--dead);
-            font-size: 0.85rem;
-            background: rgba(239, 68, 68, 0.05);
-            border: 1px solid rgba(239, 68, 68, 0.1);
-            padding: 0.25rem 0.5rem;
-            border-radius: 6px;
-            font-family: monospace;
-            word-break: break-all;
-        }
-
-        @keyframes pulse-animation {
-            0% {
-                transform: scale(0.95);
-                box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7);
-            }
-            70% {
-                transform: scale(1);
-                box-shadow: 0 0 0 6px rgba(52, 211, 153, 0);
-            }
-            100% {
-                transform: scale(0.95);
-                box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
-            }
-        }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-family: inherit;
-            font-size: 0.75rem;
-            font-weight: 600;
-            padding: 0.3rem 0.65rem;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            text-transform: uppercase;
-            letter-spacing: 0.025em;
-        }
-
-        .btn-primary {
-            background: rgba(99, 102, 241, 0.15);
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            color: #a5b4fc;
-        }
-
-        .btn-primary:hover {
-            background: rgba(99, 102, 241, 0.25);
-            border-color: rgba(99, 102, 241, 0.6);
-            color: #fff;
-        }
-
-        .btn-danger {
-            background: rgba(239, 68, 68, 0.15);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            color: #f87171;
-        }
-
-        .btn-danger:hover {
-            background: rgba(239, 68, 68, 0.25);
-            border-color: rgba(239, 68, 68, 0.6);
-            color: #fff;
-        }
-
-        .btn-warning {
-            background: rgba(245, 158, 11, 0.15);
-            border: 1px solid rgba(245, 158, 11, 0.3);
-            color: #fbbf24;
-        }
-
-        .btn-warning:hover {
-            background: rgba(245, 158, 11, 0.25);
-            border-color: rgba(245, 158, 11, 0.6);
-            color: #fff;
-        }
-
-        .actions-cell {
-            display: flex;
-            gap: 0.4rem;
-        }
-
-        .chart-container {
-            background: rgba(30, 41, 59, 0.4);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 12px;
-            padding: 1.2rem;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
-        }
-    </style>
+    <link rel="stylesheet" href="/app.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -340,7 +17,7 @@
             <div style="display: flex; align-items: center; font-size: 0.875rem; color: var(--text-muted);">
                 <span class="pulse"></span> Live
             </div>
-            <span class="badge">v0.8.0</span>
+            <span class="badge">v2.4.0</span>
         </div>
     </header>
 
@@ -419,6 +96,11 @@
                 <button class="tab-btn" data-tab="running" onclick="switchTab('running')">Active</button>
                 <button class="tab-btn" data-tab="processed" onclick="switchTab('processed')">Processed</button>
                 <button class="tab-btn" data-tab="dead" onclick="switchTab('dead')">Dead (DLQ)</button>
+                <button class="tab-btn" data-tab="cron" onclick="switchTab('cron')">Cron Jobs</button>
+                <div id="dlq-bulk-actions" style="display: none; align-items: center; gap: 0.5rem; margin-left: auto;">
+                    <button class="btn btn-primary" onclick="retryAllFailed()">Retry All</button>
+                    <button class="btn btn-danger" onclick="purgeAllFailed()">Purge All</button>
+                </div>
             </div>
             <table id="jobs-table">
                 <thead>
@@ -435,320 +117,53 @@
                     <!-- Dynamic Job Rows -->
                 </tbody>
             </table>
+            <div id="cron-table-wrapper" style="display: none;">
+                <table id="cron-table">
+                    <thead>
+                        <tr>
+                            <th>Cron Name</th>
+                            <th>Expression</th>
+                            <th>Queue</th>
+                            <th>Payload</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cron-list">
+                        <!-- Dynamic Cron Rows -->
+                    </tbody>
+                </table>
+            </div>
             <div id="no-jobs" class="empty-state" style="display: none;">
                 No pending jobs logs found.
             </div>
         </div>
     </main>
 
-    <script>
-        let activeTab = 'pending';
-        let latestJobs = [];
+    <!-- Job Details Modal -->
+    <div id="job-details-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-btn" onclick="closeJobDetailsModal()">&times;</span>
+            <h2 style="margin-bottom: 1.5rem; font-weight: 800; background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Job Details</h2>
+            <div class="modal-body">
+                <p><strong>Job ID:</strong> <span id="modal-job-id" style="font-family: monospace; font-size: 0.9rem; color: #a5b4fc;"></span></p>
+                <p><strong>Queue:</strong> <span id="modal-queue" style="font-weight: 600;"></span></p>
+                <p><strong>Job Name:</strong> <span id="modal-name"></span></p>
+                <p><strong>Attempts:</strong> <span id="modal-attempts"></span> / <span id="modal-max-attempts"></span></p>
+                <p><strong>Run At:</strong> <span id="modal-run-at"></span></p>
+                <p><strong>Trace ID:</strong> <span id="modal-trace-id" class="trace-id"></span></p>
+                <p><strong>Span ID:</strong> <span id="modal-span-id" class="trace-id"></span></p>
+                <p><strong>Unique Key:</strong> <span id="modal-unique-key" style="font-family: monospace; font-size: 0.9rem;"></span></p>
+                <p><strong>Batch ID:</strong> <span id="modal-batch-id" style="font-family: monospace; font-size: 0.9rem;"></span></p>
+                <div style="margin-top: 1.5rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                        <strong style="color: var(--text-muted);">Payload (JSON):</strong>
+                        <button class="btn btn-primary" onclick="copyPayloadToClipboard()" style="font-size: 0.7rem; padding: 0.2rem 0.5rem;">Copy</button>
+                    </div>
+                    <pre id="modal-payload" style="background: rgba(0, 0, 0, 0.4); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; overflow-x: auto; font-family: monospace; font-size: 0.85rem; max-height: 200px; color: #34d399;"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
 
-        let chart = null;
-        let chartLabels = [];
-        let throughputData = [];
-        let errorRateData = [];
-        let lastProcessed = null;
-        let lastFailed = null;
-        let lastTimestamp = null;
-
-        function initChart() {
-            const canvas = document.getElementById('performance-chart');
-            if (!canvas) return;
-            const ctx = canvas.getContext('2d');
-            chart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: chartLabels,
-                    datasets: [
-                        {
-                            label: 'Throughput (jobs/s)',
-                            data: throughputData,
-                            borderColor: 'rgba(99, 102, 241, 0.8)',
-                            backgroundColor: 'rgba(99, 102, 241, 0.1)',
-                            borderWidth: 2,
-                            tension: 0.4,
-                            fill: true
-                        },
-                        {
-                            label: 'Errors (errors/s)',
-                            data: errorRateData,
-                            borderColor: 'rgba(239, 68, 68, 0.8)',
-                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                            borderWidth: 2,
-                            tension: 0.4,
-                            fill: true
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: {
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                            ticks: { color: '#94a3b8', font: { size: 10 } }
-                        },
-                        y: {
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                            ticks: { color: '#94a3b8', font: { size: 10 } },
-                            beginAtZero: true
-                        }
-                    },
-                    plugins: {
-                        legend: {
-                            labels: { color: '#f1f5f9', font: { size: 11 } }
-                        }
-                    }
-                }
-            });
-        }
-
-        function switchTab(tab) {
-            activeTab = tab;
-            document.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
-            });
-            renderJobs();
-        }
-
-        function renderJobs() {
-            const tbody = document.getElementById('jobs-list');
-            const noJobs = document.getElementById('no-jobs');
-            const table = document.getElementById('jobs-table');
-            const thExtra = document.getElementById('th-extra');
-
-            tbody.innerHTML = '';
-            
-            const filtered = latestJobs.filter(j => {
-                if (activeTab === 'dead') {
-                    return j.status === 'dead' || j.status === 'failed';
-                }
-                return j.status === activeTab;
-            });
-
-            if (filtered.length === 0) {
-                table.style.display = 'none';
-                noJobs.style.display = 'block';
-                noJobs.innerText = `No ${activeTab} jobs logs found.`;
-                return;
-            }
-
-            table.style.display = 'table';
-            noJobs.style.display = 'none';
-
-            if (activeTab === 'dead') {
-                thExtra.style.display = 'table-cell';
-            } else {
-                thExtra.style.display = 'none';
-            }
-
-            filtered.forEach(j => {
-                const tr = document.createElement('tr');
-                let extraTd = '';
-                if (activeTab === 'dead') {
-                    extraTd = `<td><div class="error-msg">${j.error_message || 'Unknown error'}</div></td>`;
-                }
-                let actionsHtml = '';
-                if (activeTab === 'pending' || activeTab === 'running') {
-                    actionsHtml = `<button class="btn btn-danger" onclick="cancelJob('${j.job_id}')">Cancel</button>`;
-                } else if (activeTab === 'dead') {
-                    actionsHtml = `
-                        <div class="actions-cell">
-                            <button class="btn btn-primary" onclick="retryJob('${j.job_id}')">Retry</button>
-                            <button class="btn btn-danger" onclick="cancelJob('${j.job_id}')">Cancel</button>
-                        </div>
-                    `;
-                } else {
-                    actionsHtml = `<span style="color: var(--text-muted); font-size: 0.85rem;">None</span>`;
-                }
-                tr.innerHTML = `
-                    <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${j.job_id}</td>
-                    <td style="font-weight: 600;">${j.queue}</td>
-                    <td>${j.name}</td>
-                    <td><span class="trace-id">${j.trace_id || 'N/A'}</span></td>
-                    ${extraTd}
-                    <td>${actionsHtml}</td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
-
-        async function retryJob(jobId) {
-            if (!confirm(`Are you sure you want to retry job ${jobId}?`)) return;
-            try {
-                const res = await fetch(`/api/jobs/retry?id=${jobId}`, { method: 'POST' });
-                if (!res.ok) throw new Error('Failed to retry job');
-                fetchStats();
-            } catch (err) {
-                alert(err.message);
-            }
-        }
-
-        async function cancelJob(jobId) {
-            if (!confirm(`Are you sure you want to cancel job ${jobId}?`)) return;
-            try {
-                const res = await fetch(`/api/jobs/cancel?id=${jobId}`, { method: 'POST' });
-                if (!res.ok) throw new Error('Failed to cancel job');
-                fetchStats();
-            } catch (err) {
-                alert(err.message);
-            }
-        }
-
-        async function clearQueue(queueName) {
-            if (!confirm(`Are you sure you want to clear all jobs in queue "${queueName}"?`)) return;
-            try {
-                const res = await fetch(`/api/queues/clear?name=${queueName}`, { method: 'POST' });
-                if (!res.ok) throw new Error('Failed to clear queue');
-                fetchStats();
-            } catch (err) {
-                alert(err.message);
-            }
-        }
-
-        async function toggleQueue(queueName, action) {
-            if (!confirm(`Are you sure you want to ${action} queue "${queueName}"?`)) return;
-            try {
-                const res = await fetch(`/api/queues/${action}?name=${queueName}`, { method: 'POST' });
-                if (!res.ok) throw new Error(`Failed to ${action} queue`);
-                fetchStats();
-            } catch (err) {
-                alert(err.message);
-            }
-        }
-
-        async function fetchStats() {
-            try {
-                const res = await fetch('/api/stats');
-                if (!res.ok) throw new Error('Failed to fetch statistics');
-                const data = await res.json();
-                
-                document.getElementById('val-pending').innerText = data.pending || 0;
-                document.getElementById('val-running').innerText = data.running || 0;
-                document.getElementById('val-processed').innerText = data.processed || 0;
-                document.getElementById('val-failed').innerText = data.failed || 0;
-
-                const now = Date.now();
-                const totalProcessed = data.processed || 0;
-                const totalFailed = data.failed || 0;
-
-                if (lastProcessed !== null && lastTimestamp !== null) {
-                    const elapsedSec = (now - lastTimestamp) / 1000.0;
-                    if (elapsedSec > 0) {
-                        const processedDiff = Math.max(0, totalProcessed - lastProcessed);
-                        const failedDiff = Math.max(0, totalFailed - lastFailed);
-
-                        const throughput = Number((processedDiff / elapsedSec).toFixed(2));
-                        const errorRate = Number((failedDiff / elapsedSec).toFixed(2));
-
-                        const timeStr = new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-                        chartLabels.push(timeStr);
-                        throughputData.push(throughput);
-                        errorRateData.push(errorRate);
-
-                        if (chartLabels.length > 15) {
-                            chartLabels.shift();
-                            throughputData.shift();
-                            errorRateData.shift();
-                        }
-
-                        if (!chart) {
-                            initChart();
-                        } else {
-                            chart.update();
-                        }
-                    }
-                } else {
-                    const timeStr = new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                    chartLabels.push(timeStr);
-                    throughputData.push(0);
-                    errorRateData.push(0);
-                    initChart();
-                }
-
-                lastProcessed = totalProcessed;
-                lastFailed = totalFailed;
-                lastTimestamp = now;
-
-                const tbody = document.getElementById('queues-list');
-                const noQueues = document.getElementById('no-queues');
-                const table = document.getElementById('queues-table');
-                
-                tbody.innerHTML = '';
-                
-                if (!data.queues || data.queues.length === 0) {
-                    table.style.display = 'none';
-                    noQueues.style.display = 'block';
-                } else {
-                    table.style.display = 'table';
-                    noQueues.style.display = 'none';
-
-                    data.queues.forEach(q => {
-                        const tr = document.createElement('tr');
-                        const pausedBadge = q.paused 
-                            ? `<span class="badge" style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); color: #fbbf24; margin-left: 0.5rem; font-size: 0.7rem; padding: 0.15rem 0.4rem; vertical-align: middle;">Paused</span>` 
-                            : '';
-                        const actionBtn = q.paused
-                            ? `<button class="btn btn-primary" onclick="toggleQueue('${q.name}', 'resume')">Resume</button>`
-                            : `<button class="btn btn-warning" onclick="toggleQueue('${q.name}', 'pause')">Pause</button>`;
-                        tr.innerHTML = `
-                            <td style="font-weight: 600;">${q.name}${pausedBadge}</td>
-                            <td style="color: var(--pending);">${q.pending}</td>
-                            <td style="color: var(--running);">${q.running}</td>
-                            <td style="color: var(--running);">${q.processed || 0}</td>
-                            <td style="color: var(--failed);">${q.failed}</td>
-                            <td>
-                                <div class="actions-cell">
-                                    ${actionBtn}
-                                    <button class="btn btn-danger" onclick="clearQueue('${q.name}')">Clear</button>
-                                </div>
-                            </td>
-                        `;
-                        tbody.appendChild(tr);
-                    });
-                }
-
-                // Render active processes
-                const processesTbody = document.getElementById('processes-list');
-                const noProcesses = document.getElementById('no-processes');
-                const processesTable = document.getElementById('processes-table');
-                
-                processesTbody.innerHTML = '';
-                
-                if (!data.processes || data.processes.length === 0) {
-                    processesTable.style.display = 'none';
-                    noProcesses.style.display = 'block';
-                } else {
-                    processesTable.style.display = 'table';
-                    noProcesses.style.display = 'none';
-                    
-                    data.processes.forEach(p => {
-                        const tr = document.createElement('tr');
-                        const hTime = new Date(p.heartbeat_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                        const queuesStr = p.queues ? p.queues.join(', ') : 'None';
-                        tr.innerHTML = `
-                            <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${p.process_id}</td>
-                            <td style="font-weight: 600;">${p.concurrency}</td>
-                            <td>${queuesStr}</td>
-                            <td style="color: var(--running);">${hTime}</td>
-                        `;
-                        processesTbody.appendChild(tr);
-                    });
-                }
-
-                latestJobs = data.jobs || [];
-                renderJobs();
-            } catch (err) {
-                console.error(err);
-            }
-        }
-
-        // Poll every 5 seconds as requested
-        fetchStats();
-        setInterval(fetchStats, 5000);
-    </script>
+    <script src="/app.js"></script>
 </body>
 </html>

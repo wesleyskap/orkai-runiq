@@ -2,6 +2,13 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.4.0] - 2026-05-21
+
+### Added
+- **Job Details Modal**: Interactive UI overlay displaying raw JSON-formatted job arguments and detailed error messages, with single-click clipboard copying.
+- **Bulk DLQ Actions**: Support for retrying or purging all failed/dead letter queue jobs at once via `POST /api/jobs/failed/retry` and `POST /api/jobs/failed/purge` endpoints and corresponding dashboard buttons.
+- **Cron Jobs Inspector**: A dedicated Dashboard tab that parses and displays all active registered cron schedules, target queues, and execution payloads.
+
 ## [2.3.0] - 2026-05-21
 
 ### Added

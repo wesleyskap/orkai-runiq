@@ -188,3 +188,47 @@ func TestAdminPauseResumeEndpoints(t *testing.T) {
 	}
 }
 
+func TestAdminFailedEndpoints(t *testing.T) {
+	fakeStore := &FakeStorage{
+		Enqueued: []*queue.JobEnvelope{
+			{JobID: "job-f1", Queue: "q1", Name: "Job", Args: []byte("{}")},
+		},
+	}
+	h := queue.NewServer(fakeStore, ":8989").Handler()
+	t.Run("detail", func(t *testing.T) { assertDetailEndpoint(t, h) })
+	t.Run("retry_all", func(t *testing.T) { assertRetryAllEndpoint(t, h) })
+	t.Run("purge_all", func(t *testing.T) { assertPurgeAllEndpoint(t, h) })
+}
+
+func assertDetailEndpoint(t *testing.T, h http.Handler) {
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/detail?id=job-f1", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var job queue.JobEnvelope
+	_ = json.Unmarshal(w.Body.Bytes(), &job)
+	if job.JobID != "job-f1" {
+		t.Errorf("expected job-f1, got %s", job.JobID)
+	}
+}
+
+func assertRetryAllEndpoint(t *testing.T, h http.Handler) {
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/failed/retry", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func assertPurgeAllEndpoint(t *testing.T, h http.Handler) {
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs/failed/purge", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+

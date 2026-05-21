@@ -155,6 +155,34 @@ func (f *FakeStorage) ResumeQueue(ctx context.Context, queue string) error {
 	return nil
 }
 
+func (f *FakeStorage) GetJobDetail(ctx context.Context, jobID string) (*queue.JobEnvelope, error) {
+	for _, env := range f.Enqueued {
+		if env.JobID == jobID {
+			return env, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *FakeStorage) RetryAllFailed(ctx context.Context) error {
+	// RetryAllFailed is a mock implementation for tests.
+	_ = ctx
+	return nil
+}
+
+func (f *FakeStorage) PurgeAllFailed(ctx context.Context) error {
+	// PurgeAllFailed is a mock implementation for tests.
+	_ = ctx
+	return nil
+}
+
+func (f *FakeStorage) RegisterCronJobs(ctx context.Context, crons []queue.CronJob) error {
+	// RegisterCronJobs is a mock implementation for tests.
+	_ = crons
+	return nil
+}
+
+
 
 // DummyJob implements queue.Job for verification.
 type DummyJob struct {
