@@ -402,3 +402,17 @@ func (s *SqliteStorage) PurgeAllFailed(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, query)
 	return err
 }
+
+// Ping checks SQLite connection health.
+func (s *SqliteStorage) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
+// PurgeExpiredDLQ deletes dead jobs older than the given TTL.
+func (s *SqliteStorage) PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error {
+	cutoff := time.Now().Add(-ttl)
+	query := "DELETE FROM runiq_jobs WHERE status = 'dead' AND updated_at < ?"
+	_, err := s.db.ExecContext(ctx, query, cutoff)
+	return err
+}
+

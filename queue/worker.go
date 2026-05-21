@@ -50,34 +50,36 @@ type WorkerPool struct {
 	registry        map[string]Job
 	configs         map[string]handlerConfig
 	weights         map[string]int
+	middlewares     []func(JobHandler) JobHandler
+	eventHandlers   map[EventType][]EventHandler
 	fetchCounter    uint64
 	concurrency     int
 	shutdownTimeout time.Duration
+	dlqTTL          time.Duration
 	activeWorkers   sync.WaitGroup
 }
 
-// NewWorkerPool instantiates a new WorkerPool.
-// Usage example:
-//
-//	pool := queue.NewWorkerPool(storage, 5, queue.WithWorkerLogger(logger))
-func NewWorkerPool(storage WorkerPoolStorage, concurrency int, opts ...WorkerOption) *WorkerPool {
+func getWorkerProcessID() string {
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "unknown"
 	}
-	pid := os.Getpid()
-	processID := fmt.Sprintf("%s:%d:%d", hostname, pid, time.Now().UnixNano()%100000)
+	return fmt.Sprintf("%s:%d:%d", hostname, os.Getpid(), time.Now().UnixNano()%100000)
+}
 
+// NewWorkerPool instantiates a new WorkerPool.
+func NewWorkerPool(storage WorkerPoolStorage, concurrency int, opts ...WorkerOption) *WorkerPool {
 	w := &WorkerPool{
 		storage:         storage,
 		logger:          &defaultLogger{},
 		tracer:          &defaultTracer{},
-		processID:       processID,
+		processID:       getWorkerProcessID(),
 		registry:        make(map[string]Job),
 		configs:         make(map[string]handlerConfig),
 		weights:         make(map[string]int),
 		concurrency:     concurrency,
 		shutdownTimeout: 10 * time.Second,
+		eventHandlers:   make(map[EventType][]EventHandler),
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -116,6 +118,13 @@ func WithShutdownTimeout(timeout time.Duration) WorkerOption {
 	}
 }
 
+// WithDLQTTL sets the TTL for dead letter queue (DLQ) auto-purge.
+func WithDLQTTL(ttl time.Duration) WorkerOption {
+	return func(w *WorkerPool) {
+		w.dlqTTL = ttl
+	}
+}
+
 // Register maps a job name to a Job implementation with optional rate limiting/concurrency.
 func (w *WorkerPool) Register(name string, job Job, opts ...HandlerOption) {
 	w.registry[name] = job
@@ -134,6 +143,16 @@ func (w *WorkerPool) RegisterCron(spec, queue, name string, payload []byte) {
 		Name:    name,
 		Queue:   queue,
 	})
+}
+
+// Use registers job execution middlewares.
+func (w *WorkerPool) Use(mws ...func(JobHandler) JobHandler) {
+	w.middlewares = append(w.middlewares, mws...)
+}
+
+// OnEvent registers an event handler for a specific lifecycle event.
+func (w *WorkerPool) OnEvent(eventType EventType, h EventHandler) {
+	w.eventHandlers[eventType] = append(w.eventHandlers[eventType], h)
 }
 
 // Start spawns workers and begins consuming from specified queues.
@@ -186,6 +205,39 @@ func (w *WorkerPool) startBackgroundLoops(ctx context.Context, queues []string) 
 		go w.startCronScheduler(ctx)
 	}
 	go w.startScheduledPoller(ctx, queues)
+	go w.startDLQAutopurge(ctx)
+}
+
+func (w *WorkerPool) startDLQAutopurge(ctx context.Context) {
+	if w.dlqTTL <= 0 {
+		return
+	}
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	_ = w.storage.PurgeExpiredDLQ(ctx, w.dlqTTL)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = w.storage.PurgeExpiredDLQ(ctx, w.dlqTTL)
+		}
+	}
+}
+
+func (w *WorkerPool) triggerEvent(eventType EventType, env *JobEnvelope, err error) {
+	handlers := w.eventHandlers[eventType]
+	if len(handlers) == 0 {
+		return
+	}
+	event := Event{
+		Type: eventType,
+		Job:  env,
+		Err:  err,
+	}
+	for _, h := range handlers {
+		h(event)
+	}
 }
 
 func (w *WorkerPool) runProcessingLoop(ctx context.Context, queues []string) {
@@ -357,21 +409,68 @@ func (w *WorkerPool) runJobPerform(ctx context.Context, env *JobEnvelope, job Jo
 		}
 		w.finalizeJob(jobCtx, env, start, runErr)
 	}()
-	runErr = job.Perform(jobCtx, env.Args)
+
+	handler := func(c context.Context, je *JobEnvelope) error {
+		return job.Perform(c, je.Args)
+	}
+	for i := len(w.middlewares) - 1; i >= 0; i-- {
+		handler = w.middlewares[i](handler)
+	}
+	runErr = handler(jobCtx, env)
 }
 
 func (w *WorkerPool) finalizeJob(ctx context.Context, env *JobEnvelope, start time.Time, err error) {
 	duration := time.Since(start)
 	w.tracer.RecordLatency(ctx, "runiq_job_duration", duration, map[string]string{"name": env.Name})
 	if err != nil {
-		_ = w.storage.Fail(ctx, env.JobID, err)
-		w.tracer.IncrementCounter(ctx, "runiq_job_failed", map[string]string{"name": env.Name})
-		w.logger.Error(ctx, "job failed", err, "job_id", env.JobID)
+		w.finalizeJobFailure(ctx, env, err)
 		return
 	}
 	_ = w.storage.Ack(ctx, env.JobID)
 	w.tracer.IncrementCounter(ctx, "runiq_job_success", map[string]string{"name": env.Name})
 	w.logger.Info(ctx, "job completed", "job_id", env.JobID)
+	w.triggerEvent(EventJobCompleted, env, nil)
+}
+
+func (w *WorkerPool) finalizeJobFailure(ctx context.Context, env *JobEnvelope, err error) {
+	_ = w.storage.Fail(ctx, env.JobID, err)
+	w.tracer.IncrementCounter(ctx, "runiq_job_failed", map[string]string{"name": env.Name})
+	w.logger.Error(ctx, "job failed", err, "job_id", env.JobID)
+	maxAttempts := env.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	if env.Attempts+1 < maxAttempts {
+		w.triggerEvent(EventJobFailed, env, err)
+	} else {
+		w.triggerEvent(EventJobDead, env, err)
+	}
+}
+
+func createCronEnvelope(cron CronJob, now time.Time) *JobEnvelope {
+	return &JobEnvelope{
+		JobID:       fmt.Sprintf("cron-%s-%d", cron.Name, now.Unix()),
+		Queue:       cron.Queue,
+		Name:        cron.Name,
+		Args:        cron.Payload,
+		MaxAttempts: 3,
+	}
+}
+
+func (w *WorkerPool) enqueueCronJob(ctx context.Context, cron CronJob, now time.Time) {
+	ok, err := w.storage.LockCronExecution(ctx, cron.Name, now)
+	if err != nil || !ok {
+		if err != nil {
+			w.logger.Error(ctx, "failed to check cron lock", err, "cron_name", cron.Name)
+		}
+		return
+	}
+	env := createCronEnvelope(cron, now)
+	if err := w.storage.Enqueue(ctx, env); err != nil {
+		w.logger.Error(ctx, "failed to enqueue cron job", err, "cron_name", cron.Name)
+	} else {
+		w.triggerEvent(EventJobEnqueued, env, nil)
+	}
 }
 
 func (w *WorkerPool) startCronScheduler(ctx context.Context) {
@@ -397,27 +496,6 @@ func (w *WorkerPool) processCronJobs(ctx context.Context, now time.Time) {
 		if MatchCron(cron.Spec, now) {
 			go w.enqueueCronJob(ctx, cron, now)
 		}
-	}
-}
-
-func (w *WorkerPool) enqueueCronJob(ctx context.Context, cron CronJob, now time.Time) {
-	ok, err := w.storage.LockCronExecution(ctx, cron.Name, now)
-	if err != nil {
-		w.logger.Error(ctx, "failed to check cron lock", err, "cron_name", cron.Name)
-		return
-	}
-	if !ok {
-		return
-	}
-	env := &JobEnvelope{
-		JobID:       fmt.Sprintf("cron-%s-%d", cron.Name, now.Unix()),
-		Queue:       cron.Queue,
-		Name:        cron.Name,
-		Args:        cron.Payload,
-		MaxAttempts: 3,
-	}
-	if err := w.storage.Enqueue(ctx, env); err != nil {
-		w.logger.Error(ctx, "failed to enqueue cron job", err, "cron_name", cron.Name)
 	}
 }
 

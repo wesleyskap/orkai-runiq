@@ -2,6 +2,16 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.5.0] - 2026-05-21
+
+### Added
+- **Job Middleware Pipeline**: Added `pool.Use(mws ...func(queue.JobHandler) queue.JobHandler)` supporting middleware wrappers around job execution to ease logger, tracer, and telemetry interceptors insertion.
+- **Event Hooks Integration**: Added event lifecycle hook framework `pool.OnEvent(eventType, handler)` alerting external listeners on job state changes (`JobEnqueued`, `JobCompleted`, `JobFailed`, `JobDead`).
+- **DLQ Auto-Purge**: Introduced automatic expiration configuration for dead jobs (`WithDLQTTL(duration)`) and a background purging poller routine natively supported on SQLite, PostgreSQL, and Redis.
+- **Storage Health Check**: Introduced `Ping(context.Context) error` on the `Pinger` interface (embedded in all storage definitions) to check connection status.
+- **CLI: HTTPS & Basic Auth**: Added console flags (`--tls-cert`, `--tls-key`, `--basic-auth-user`, `--basic-auth-pass`) to easily serve the dashboard API over secure TLS and basic authentication.
+- **Test Helpers Package**: Exposed mock and stub structures (`FakeClientStorage`, `FakeServerStorage`, `FakeWorkerPoolStorage`, `FakeLogger`, `FakeTracer`) inside the new `test/queuetest/` package to allow easy unit/integration testing for external consumers.
+
 ## [2.4.0] - 2026-05-21
 
 ### Added

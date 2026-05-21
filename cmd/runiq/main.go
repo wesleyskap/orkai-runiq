@@ -110,20 +110,39 @@ func (j *WebhookJob) Perform(ctx context.Context, args []byte) error {
 	return nil
 }
 
+type config struct {
+	port        string
+	dsn         string
+	driver      string
+	queues      string
+	tlsCert     string
+	tlsKey      string
+	authUser    string
+	authPass    string
+	concurrency int
+}
+
 func main() {
-	port := flag.String("port", ":8080", "Dashboard port")
-	dsn := flag.String("dsn", "", "Connection string for storage backend")
-	driver := flag.String("driver", "", "Database driver (postgres, redis, sqlite)")
-	queuesFlag := flag.String("queue", "", "Comma-separated list of queues to poll")
-	concurrency := flag.Int("concurrency", 10, "Concurrency level for workers")
-
-	flag.Parse()
-
-	if *dsn == "" || *driver == "" || *queuesFlag == "" {
+	cfg := parseFlags()
+	if cfg.dsn == "" || cfg.driver == "" || cfg.queues == "" {
 		log.Fatalf("missing required flags: --dsn, --driver and --queue are mandatory")
 	}
+	runCli(cfg)
+}
 
-	runCli(*port, *dsn, *driver, *queuesFlag, *concurrency)
+func parseFlags() config {
+	cfg := config{}
+	flag.StringVar(&cfg.port, "port", ":8080", "Dashboard port")
+	flag.StringVar(&cfg.dsn, "dsn", "", "Connection string for storage backend")
+	flag.StringVar(&cfg.driver, "driver", "", "Database driver (postgres, redis, sqlite)")
+	flag.StringVar(&cfg.queues, "queue", "", "Comma-separated list of queues to poll")
+	flag.IntVar(&cfg.concurrency, "concurrency", 10, "Concurrency level for workers")
+	flag.StringVar(&cfg.tlsCert, "tls-cert", "", "Path to TLS cert file")
+	flag.StringVar(&cfg.tlsKey, "tls-key", "", "Path to TLS key file")
+	flag.StringVar(&cfg.authUser, "basic-auth-user", "", "Basic auth username")
+	flag.StringVar(&cfg.authPass, "basic-auth-pass", "", "Basic auth password")
+	flag.Parse()
+	return cfg
 }
 
 func initStorage(driver, dsn string) (interface{}, error) {
@@ -139,18 +158,16 @@ func initStorage(driver, dsn string) (interface{}, error) {
 	}
 }
 
-func runCli(port, dsn, driver, queuesFlag string, concurrency int) {
-	queues := strings.Split(queuesFlag, ",")
+func runCli(cfg config) {
+	queues := strings.Split(cfg.queues, ",")
 	for i, q := range queues {
 		queues[i] = strings.TrimSpace(q)
 	}
-
-	storage, err := initStorage(driver, dsn)
+	storage, err := initStorage(cfg.driver, cfg.dsn)
 	if err != nil {
 		log.Fatalf("failed to initialize storage: %v", err)
 	}
-
-	startServices(port, storage, concurrency, queues)
+	startServices(cfg, storage, queues)
 }
 
 func connectPostgres(dsn string) (*queue.PostgresStorage, error) {
@@ -190,24 +207,48 @@ func runWorkerPool(ctx context.Context, pool *queue.WorkerPool, queues []string)
 	}
 }
 
-func runDashboardServer(srv *queue.Server) {
-	log.Printf("Starting dashboard server...")
-	if err := srv.Start(); err != nil && err != http.ErrServerClosed {
+func basicAuth(username, password string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, pass, ok := r.BasicAuth()
+			if !ok || user != username || pass != password {
+				w.Header().Set("WWW-Authenticate", `Basic realm="Runiq Dashboard"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func buildServer(cfg config, store queue.ServerStorage) *queue.Server {
+	var opts []queue.ServerOption
+	if cfg.authUser != "" && cfg.authPass != "" {
+		opts = append(opts, queue.WithMiddleware(basicAuth(cfg.authUser, cfg.authPass)))
+	}
+	return queue.NewServer(store, cfg.port, opts...)
+}
+
+func runDashboardServer(srv *queue.Server, cfg config) {
+	log.Printf("Starting dashboard server on %s...", cfg.port)
+	var err error
+	if cfg.tlsCert != "" && cfg.tlsKey != "" {
+		err = srv.StartTLS(cfg.tlsCert, cfg.tlsKey)
+	} else {
+		err = srv.Start()
+	}
+	if err != nil && err != http.ErrServerClosed {
 		log.Printf("Dashboard server error: %v", err)
 	}
 }
 
-func startServices(port string, storage interface{}, concurrency int, queues []string) {
-	poolStore, ok := storage.(queue.WorkerPoolStorage)
-	if !ok {
-		log.Fatalf("storage engine does not support worker pool operations")
+func startServices(cfg config, storage interface{}, queues []string) {
+	poolStore, _ := storage.(queue.WorkerPoolStorage)
+	serverStore, _ := storage.(queue.ServerStorage)
+	if poolStore == nil || serverStore == nil {
+		log.Fatalf("storage engine does not support worker pool or server operations")
 	}
-	serverStore, ok := storage.(queue.ServerStorage)
-	if !ok {
-		log.Fatalf("storage engine does not support dashboard server operations")
-	}
-
-	pool := queue.NewWorkerPool(poolStore, concurrency)
+	pool := queue.NewWorkerPool(poolStore, cfg.concurrency)
 	pool.Register("shell", &ShellJob{})
 	pool.Register("webhook", &WebhookJob{})
 
@@ -215,10 +256,8 @@ func startServices(port string, storage interface{}, concurrency int, queues []s
 	defer cancel()
 
 	go runWorkerPool(ctx, pool, queues)
-
-	srv := queue.NewServer(serverStore, port)
-	go runDashboardServer(srv)
-
+	srv := buildServer(cfg, serverStore)
+	go runDashboardServer(srv, cfg)
 	handleShutdown(cancel, srv)
 }
 

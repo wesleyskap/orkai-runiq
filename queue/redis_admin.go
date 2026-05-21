@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -65,61 +66,62 @@ func (r *RedisStorage) Ack(ctx context.Context, jobID string) error {
 
 func (r *RedisStorage) Fail(ctx context.Context, jobID string, runErr error) error {
 	data, err := r.client.HGet(ctx, "runiq:jobs", jobID).Result()
-	if err == redis.Nil {
-		return nil
-	}
 	if err != nil {
+		if err == redis.Nil {
+			return nil
+		}
 		return err
 	}
 	var env JobEnvelope
 	if err := json.Unmarshal([]byte(data), &env); err != nil {
 		return err
 	}
-
 	env.Attempts++
+	return r.processFail(ctx, &env, runErr)
+}
+
+func (r *RedisStorage) processFail(ctx context.Context, env *JobEnvelope, runErr error) error {
 	maxAttempts := env.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
-
+	pipe := r.client.Pipeline()
+	pipe.SRem(ctx, "runiq:active:"+env.Queue, env.JobID)
 	if env.Attempts < maxAttempts {
 		nextRun := time.Now().Add(computeBackoffDelay(env.Attempts - 1))
 		env.RunAt = &nextRun
-
-		updatedData, err := json.Marshal(&env)
-		if err != nil {
-			return err
-		}
-
-		pipe := r.client.Pipeline()
-		pipe.HSet(ctx, "runiq:jobs", env.JobID, updatedData)
-		pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
-		pipe.ZAdd(ctx, "runiq:scheduled:"+env.Queue, redis.Z{
-			Score:  float64(nextRun.Unix()),
-			Member: jobID,
-		})
-		_, err = pipe.Exec(ctx)
-		return err
+		r.rescheduleJob(ctx, pipe, env)
 	} else {
-		updatedData, err := json.Marshal(&env)
-		if err != nil {
-			return err
-		}
+		r.handleDeadJob(ctx, pipe, env, runErr)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
 
-		pipe := r.client.Pipeline()
-		pipe.HSet(ctx, "runiq:jobs", env.JobID, updatedData)
-		pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
-		pipe.LPush(ctx, "runiq:dead:"+env.Queue, jobID)
-		pipe.LTrim(ctx, "runiq:dead:"+env.Queue, 0, 49)
-		pipe.HSet(ctx, "runiq:errors", jobID, runErr.Error())
-		if env.UniqueKey != "" {
-			pipe.Del(ctx, "runiq:unique:"+env.Queue+":"+env.UniqueKey)
-		}
-		if env.BatchID != "" {
-			pipe.HSet(ctx, "runiq:batch:"+env.BatchID, "status", "failed")
-		}
-		_, err = pipe.Exec(ctx)
-		return err
+func (r *RedisStorage) rescheduleJob(ctx context.Context, pipe redis.Pipeliner, env *JobEnvelope) {
+	updatedData, _ := json.Marshal(env)
+	pipe.HSet(ctx, "runiq:jobs", env.JobID, updatedData)
+	pipe.ZAdd(ctx, "runiq:scheduled:"+env.Queue, redis.Z{
+		Score:  float64(env.RunAt.Unix()),
+		Member: env.JobID,
+	})
+}
+
+func (r *RedisStorage) handleDeadJob(ctx context.Context, pipe redis.Pipeliner, env *JobEnvelope, runErr error) {
+	updatedData, _ := json.Marshal(env)
+	pipe.HSet(ctx, "runiq:jobs", env.JobID, updatedData)
+	pipe.LPush(ctx, "runiq:dead:"+env.Queue, env.JobID)
+	pipe.LTrim(ctx, "runiq:dead:"+env.Queue, 0, 49)
+	pipe.HSet(ctx, "runiq:errors", env.JobID, runErr.Error())
+	pipe.ZAdd(ctx, "runiq:dead_ttl", redis.Z{
+		Score:  float64(time.Now().Unix()),
+		Member: env.Queue + ":" + env.JobID,
+	})
+	if env.UniqueKey != "" {
+		pipe.Del(ctx, "runiq:unique:"+env.Queue+":"+env.UniqueKey)
+	}
+	if env.BatchID != "" {
+		pipe.HSet(ctx, "runiq:batch:"+env.BatchID, "status", "failed")
 	}
 }
 
@@ -128,27 +130,27 @@ func (r *RedisStorage) Retry(ctx context.Context, jobID string) error {
 	if err != nil {
 		return err
 	}
-
 	var env JobEnvelope
 	if err := json.Unmarshal([]byte(val), &env); err != nil {
 		return err
 	}
-
 	env.Attempts = 0
 	env.RunAt = nil
+	return r.executeRetryTx(ctx, &env)
+}
 
-	newVal, err := json.Marshal(&env)
+func (r *RedisStorage) executeRetryTx(ctx context.Context, env *JobEnvelope) error {
+	newVal, err := json.Marshal(env)
 	if err != nil {
 		return err
 	}
-
 	pipe := r.client.TxPipeline()
-	pipe.HSet(ctx, "runiq:jobs", jobID, newVal)
-	pipe.LRem(ctx, "runiq:failed:"+env.Queue, 0, jobID)
-	pipe.LRem(ctx, "runiq:dead:"+env.Queue, 0, jobID)
-	pipe.HDel(ctx, "runiq:errors", jobID)
-	pipe.LPush(ctx, "runiq:queue:"+env.Queue, jobID)
-
+	pipe.HSet(ctx, "runiq:jobs", env.JobID, newVal)
+	pipe.LRem(ctx, "runiq:failed:"+env.Queue, 0, env.JobID)
+	pipe.LRem(ctx, "runiq:dead:"+env.Queue, 0, env.JobID)
+	pipe.ZRem(ctx, "runiq:dead_ttl", env.Queue+":"+env.JobID)
+	pipe.HDel(ctx, "runiq:errors", env.JobID)
+	pipe.LPush(ctx, "runiq:queue:"+env.Queue, env.JobID)
 	_, err = pipe.Exec(ctx)
 	return err
 }
@@ -161,30 +163,32 @@ func (r *RedisStorage) Cancel(ctx context.Context, jobID string) error {
 		}
 		return err
 	}
-
 	var env JobEnvelope
 	if err := json.Unmarshal([]byte(val), &env); err != nil {
 		return err
 	}
+	return r.executeCancelTx(ctx, &env)
+}
 
+func (r *RedisStorage) executeCancelTx(ctx context.Context, env *JobEnvelope) error {
 	pipe := r.client.TxPipeline()
-	pipe.LRem(ctx, "runiq:queue:"+env.Queue, 0, jobID)
-	pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
-	pipe.ZRem(ctx, "runiq:scheduled:"+env.Queue, jobID)
-	pipe.LRem(ctx, "runiq:failed:"+env.Queue, 0, jobID)
-	pipe.LRem(ctx, "runiq:dead:"+env.Queue, 0, jobID)
-	pipe.LRem(ctx, "runiq:processed:"+env.Queue, 0, jobID)
-	pipe.HDel(ctx, "runiq:jobs", jobID)
-	pipe.HDel(ctx, "runiq:errors", jobID)
+	pipe.LRem(ctx, "runiq:queue:"+env.Queue, 0, env.JobID)
+	pipe.SRem(ctx, "runiq:active:"+env.Queue, env.JobID)
+	pipe.ZRem(ctx, "runiq:scheduled:"+env.Queue, env.JobID)
+	pipe.LRem(ctx, "runiq:failed:"+env.Queue, 0, env.JobID)
+	pipe.LRem(ctx, "runiq:dead:"+env.Queue, 0, env.JobID)
+	pipe.ZRem(ctx, "runiq:dead_ttl", env.Queue+":"+env.JobID)
+	pipe.LRem(ctx, "runiq:processed:"+env.Queue, 0, env.JobID)
+	pipe.HDel(ctx, "runiq:jobs", env.JobID)
+	pipe.HDel(ctx, "runiq:errors", env.JobID)
 	if env.UniqueKey != "" {
 		pipe.Del(ctx, "runiq:unique:"+env.Queue+":"+env.UniqueKey)
 	}
-
-	_, err = pipe.Exec(ctx)
+	_, err := pipe.Exec(ctx)
 	return err
 }
 
-func (r *RedisStorage) ClearQueue(ctx context.Context, queue string) error {
+func (r *RedisStorage) collectQueueIDs(ctx context.Context, queue string) ([]string, []string) {
 	pIDs, _ := r.client.LRange(ctx, "runiq:queue:"+queue, 0, -1).Result()
 	sIDs, _ := r.client.ZRange(ctx, "runiq:scheduled:"+queue, 0, -1).Result()
 	aIDs, _ := r.client.SMembers(ctx, "runiq:active:"+queue).Result()
@@ -199,41 +203,53 @@ func (r *RedisStorage) ClearQueue(ctx context.Context, queue string) error {
 	allJobIDs = append(allJobIDs, prIDs...)
 	allJobIDs = append(allJobIDs, fIDs...)
 	allJobIDs = append(allJobIDs, dIDs...)
+	return allJobIDs, dIDs
+}
 
+func (r *RedisStorage) scanUniqueKeys(ctx context.Context, queue string) []string {
 	var cursor uint64
 	var keysToDelete []string
 	for {
-		var keys []string
-		var err error
-		keys, cursor, err = r.client.Scan(ctx, cursor, "runiq:unique:"+queue+":*", 100).Result()
+		keys, nextCursor, err := r.client.Scan(ctx, cursor, "runiq:unique:"+queue+":*", 100).Result()
 		if err != nil {
-			return err
+			break
 		}
 		keysToDelete = append(keysToDelete, keys...)
+		cursor = nextCursor
 		if cursor == 0 {
 			break
 		}
 	}
+	return keysToDelete
+}
+
+func (r *RedisStorage) ClearQueue(ctx context.Context, queue string) error {
+	allJobIDs, dIDs := r.collectQueueIDs(ctx, queue)
+	keysToDelete := r.scanUniqueKeys(ctx, queue)
 
 	pipe := r.client.TxPipeline()
 	if len(allJobIDs) > 0 {
 		pipe.HDel(ctx, "runiq:jobs", allJobIDs...)
 		pipe.HDel(ctx, "runiq:errors", allJobIDs...)
 	}
-
+	for _, id := range dIDs {
+		pipe.ZRem(ctx, "runiq:dead_ttl", queue+":"+id)
+	}
 	if len(keysToDelete) > 0 {
 		pipe.Del(ctx, keysToDelete...)
 	}
+	r.deleteQueueKeys(ctx, pipe, queue)
+	_, err := pipe.Exec(ctx)
+	return err
+}
 
+func (r *RedisStorage) deleteQueueKeys(ctx context.Context, pipe redis.Pipeliner, queue string) {
 	pipe.Del(ctx, "runiq:queue:"+queue)
 	pipe.Del(ctx, "runiq:active:"+queue)
 	pipe.Del(ctx, "runiq:scheduled:"+queue)
 	pipe.Del(ctx, "runiq:processed:"+queue)
 	pipe.Del(ctx, "runiq:failed:"+queue)
 	pipe.Del(ctx, "runiq:dead:"+queue)
-
-	_, err := pipe.Exec(ctx)
-	return err
 }
 
 
@@ -420,16 +436,54 @@ func (r *RedisStorage) purgeQueueFailed(ctx context.Context, q string) error {
 	if len(allIDs) == 0 {
 		return nil
 	}
-	return r.deleteFailedJobs(ctx, q, allIDs)
+	return r.deleteFailedJobs(ctx, q, allIDs, deadIDs)
 }
 
-func (r *RedisStorage) deleteFailedJobs(ctx context.Context, q string, ids []string) error {
+func (r *RedisStorage) deleteFailedJobs(ctx context.Context, q string, ids []string, deadIDs []string) error {
 	pipe := r.client.TxPipeline()
 	pipe.HDel(ctx, "runiq:jobs", ids...)
 	pipe.HDel(ctx, "runiq:errors", ids...)
 	pipe.Del(ctx, "runiq:failed:"+q)
 	pipe.Del(ctx, "runiq:dead:"+q)
+	for _, id := range deadIDs {
+		pipe.ZRem(ctx, "runiq:dead_ttl", q+":"+id)
+	}
 	_, err := pipe.Exec(ctx)
 	return err
 }
+
+// Ping checks the Redis server connection.
+func (r *RedisStorage) Ping(ctx context.Context) error {
+	return r.client.Ping(ctx).Err()
+}
+
+// PurgeExpiredDLQ removes dead jobs older than the given TTL.
+func (r *RedisStorage) PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error {
+	cutoff := time.Now().Add(-ttl)
+	expired, err := r.client.ZRangeByScore(ctx, "runiq:dead_ttl", &redis.ZRangeBy{
+		Min: "-inf",
+		Max: fmt.Sprintf("%d", cutoff.Unix()),
+	}).Result()
+	if err != nil || len(expired) == 0 {
+		return err
+	}
+	return r.executePurgeDLQ(ctx, expired)
+}
+
+func (r *RedisStorage) executePurgeDLQ(ctx context.Context, expired []string) error {
+	pipe := r.client.TxPipeline()
+	for _, member := range expired {
+		pipe.ZRem(ctx, "runiq:dead_ttl", member)
+		parts := strings.SplitN(member, ":", 2)
+		if len(parts) == 2 {
+			queue, jobID := parts[0], parts[1]
+			pipe.LRem(ctx, "runiq:dead:"+queue, 0, jobID)
+			pipe.HDel(ctx, "runiq:jobs", jobID)
+			pipe.HDel(ctx, "runiq:errors", jobID)
+		}
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 

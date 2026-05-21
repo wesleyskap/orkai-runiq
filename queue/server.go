@@ -87,6 +87,15 @@ func (s *Server) Start() error {
 	return err
 }
 
+// StartTLS runs the HTTPS listener.
+func (s *Server) StartTLS(certFile, keyFile string) error {
+	err := s.httpServer.ListenAndServeTLS(certFile, keyFile)
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
 // Shutdown stops the listener.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
