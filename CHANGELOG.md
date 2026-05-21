@@ -2,6 +2,14 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.3.0] - 2026-05-21
+
+### Added
+- **SQLite Storage Backend**: Implemented local file-based persistence support out-of-the-box (pure Go/CGO-free via `github.com/glebarez/go-sqlite`).
+- **Command Line Interface (CLI)**: Added a compiled standalone binary (`cmd/runiq`) to easily launch worker pools and dashboard servers directly from the console.
+- **Built-in Generic Job Handlers**: Integrated generic `ShellJob` (for executing command-line scripts) and `WebhookJob` (for outgoing HTTP POST/method payloads) directly inside the CLI.
+- **SQLite Integration Tests**: Built `test/sqlite_test.go` covering full lifecycle parity (scheduling, retries, unique job locks, batches, rate limits, and pause/resume states).
+
 ## [2.2.0] - 2026-05-21
 
 ### Added

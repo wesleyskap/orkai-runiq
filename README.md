@@ -23,6 +23,9 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 ### queue/redis.go
 * **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, ZSets for future `run_at` schedules, isolating exhausted jobs in `runiq:dead:{queue}` lists (DLQ), tracking queue stats (Pending, Active, Processed, and Dead/Failed) using dedicated Redis Lists, and enforcing concurrency/rate limits using sliding-window sorted sets.
 
+### queue/sqlite.go
+* **SqliteStorage**: SQLite driver implementing the Storage interface, utilizing WAL (Write-Ahead Logging) and atomic transaction blocks with RETURNING statements for lock-free concurrent dequeues, auto-creating schema tables, tracking scheduled execution times, and enforcing unique job constraints, rate limits, and job batching flows.
+
 ### queue/client.go
 * **Client**: Client helper for enqueuing jobs with transparent Trace ID propagation.
 
@@ -53,7 +56,7 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 
 ### Initializing Storage Drivers
 
-You can choose either PostgreSQL or Redis as the storage backend:
+You can choose PostgreSQL, Redis, or SQLite as the storage backend:
 
 ```go
 package main
@@ -63,6 +66,7 @@ import (
 	"database/sql"
 	"log"
 
+	_ "github.com/glebarez/go-sqlite" // Pure Go SQLite driver (CGO-free)
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 	"github.com/wesleyskap/orkai-runiq/v2/queue"
@@ -80,6 +84,14 @@ func useRedis(client *redis.Client) *queue.RedisStorage {
 	storage, err := queue.NewRedisStorage(client)
 	if err != nil {
 		log.Fatalf("failed to init redis: %v", err)
+	}
+	return storage
+}
+
+func useSqlite(db *sql.DB) *queue.SqliteStorage {
+	storage, err := queue.NewSqliteStorage(db)
+	if err != nil {
+		log.Fatalf("failed to init sqlite: %v", err)
 	}
 	return storage
 }
@@ -378,6 +390,146 @@ server := queue.NewServer(storage, ":8080", queue.WithMiddleware(authMiddleware)
 
 Runiq defines telemetry boundaries using simple, pluggable interfaces. By default, it falls back to Go standard library logging (slog/log) and skips metrics recording. Integration with external telemetry engines (like orkai-observability) can be enabled by supplying custom implementations of logging and tracing interfaces.
 
+## Command Line Interface (CLI)
+
+Runiq includes a standalone CLI that allows you to start worker pools and dashboard servers directly from the command line without writing Go code.
+
+### Step-by-Step Guide: Generating and Running the CLI
+
+Follow these steps to compile and run the Runiq standalone CLI on your local environment:
+
+#### 1. Compile the Binary
+Open your terminal in the root of the project directory and run the compilation command matching your operating system:
+
+* **Linux / macOS:**
+  ```bash
+  go build -o runiq ./cmd/runiq
+  ```
+* **Windows:**
+  ```powershell
+  go build -o runiq.exe ./cmd/runiq
+  ```
+
+This generates a standalone `runiq` or `runiq.exe` binary in your root directory.
+
+#### 2. Run the CLI
+Start the worker pool and dashboard server by executing the compiled binary and supplying the required flags (driver type, connection string, and queues).
+
+For example, using **SQLite** (which automatically creates the database file for you locally):
+* **Linux / macOS:**
+  ```bash
+  ./runiq --driver sqlite --dsn runiq.db --queue default,critical --port :8080 --concurrency 5
+  ```
+* **Windows:**
+  ```powershell
+  .\runiq.exe --driver sqlite --dsn runiq.db --queue default,critical --port :8080 --concurrency 5
+  ```
+
+#### 3. Access the Dashboard
+Once the CLI starts, it spins up both the worker poller and the dashboard server. Open your web browser and navigate to:
+```text
+http://localhost:8080
+```
+Here, you can monitor queue statistics, active processes, and perform administrative actions (such as pausing/resuming queues, retrying failed jobs, or canceling pending tasks).
+
+#### 4. Schedule Tasks (Using Built-in Generic Handlers)
+Since the compiled binary does not have your custom Go job structs compiled in, you must use Runiq's client library in your main application to enqueue jobs of type `"shell"` or `"webhook"` to be consumed by the CLI. (See the **Built-in Generic Job Handlers** section below for the expected argument structures).
+
+### Using the CLI in Another Project (As an Imported Package)
+
+If you are using Runiq as a dependency (`go get github.com/wesleyskap/orkai-runiq/v2`) in another project, you do not need to clone the Runiq repository to compile or use the CLI. You can build, install, or execute it directly from Go using the remote module path:
+
+#### Option A: Compile the Binary in Your Project
+To build and save the binary inside your project folder:
+* **Linux / macOS:**
+  ```bash
+  go build -o runiq github.com/wesleyskap/orkai-runiq/v2/cmd/runiq
+  ```
+* **Windows:**
+  ```powershell
+  go build -o runiq.exe github.com/wesleyskap/orkai-runiq/v2/cmd/runiq
+  ```
+
+#### Option B: Run on-the-fly (Without Compiling)
+To run the CLI instantly without generating an executable file in your workspace:
+```bash
+go run github.com/wesleyskap/orkai-runiq/v2/cmd/runiq --driver sqlite --dsn runiq.db --queue default
+```
+
+#### Option C: Install Globally
+To build and install the binary globally (this puts the `runiq` executable inside your `$GOPATH/bin` or `$GOBIN` directory):
+```bash
+go install github.com/wesleyskap/orkai-runiq/v2/cmd/runiq@latest
+```
+Once installed globally, you can run it from any directory using:
+```bash
+runiq --driver sqlite --dsn runiq.db --queue default
+```
+
+### CLI Options
+
+The CLI supports the following configuration flags:
+
+* `--port` (default `:8080`): The port on which the web dashboard server will run.
+* `--driver` (mandatory: `postgres`, `redis`, or `sqlite`): The storage engine to use.
+* `--dsn` (mandatory): The connection string / path for the chosen storage driver.
+* `--queue` (mandatory): Comma-separated list of queues to poll and process.
+* `--concurrency` (default `10`): The maximum number of concurrent worker goroutines.
+
+### Built-in Generic Job Handlers
+
+Because a compiled binary cannot compile custom Go task logic, the Runiq CLI includes two built-in generic handlers out-of-the-box:
+
+1. **`shell` (ShellJob)**: Executes a command-line script.
+   - **Payload arguments format**: A JSON string containing `{"command": "<system_command>"}` or a raw command string.
+   - **Execution behavior**: Runs via PowerShell on Windows systems, and `sh` on Unix-like systems.
+2. **`webhook` (WebhookJob)**: Sends an HTTP request.
+   - **Payload arguments format**: A JSON object matching the schema below:
+     ```json
+     {
+       "url": "https://api.example.com/endpoint",
+       "method": "POST",
+       "headers": {
+         "Authorization": "Bearer token123"
+       },
+       "body": "{\"status\":\"completed\"}"
+     }
+     ```
+
+### Example Commands
+
+#### Running with SQLite (Local Persistence)
+For development or small standalone instances without external dependencies:
+
+* **macOS / Linux:**
+  ```bash
+  ./runiq --driver sqlite --dsn runiq.db --queue default,critical --port :8080 --concurrency 5
+  ```
+* **Windows:**
+  ```powershell
+  .\runiq.exe --driver sqlite --dsn runiq.db --queue default,critical --port :8080 --concurrency 5
+  ```
+
+#### Running with PostgreSQL
+* **macOS / Linux:**
+  ```bash
+  ./runiq --driver postgres --dsn "postgres://user:pass@localhost:5432/runiq?sslmode=disable" --queue critical,default
+  ```
+* **Windows:**
+  ```powershell
+  .\runiq.exe --driver postgres --dsn "postgres://user:pass@localhost:5432/runiq?sslmode=disable" --queue critical,default
+  ```
+
+#### Running with Redis
+* **macOS / Linux:**
+  ```bash
+  ./runiq --driver redis --dsn "redis://localhost:6379/0" --queue email,sms --concurrency 20
+  ```
+* **Windows:**
+  ```powershell
+  .\runiq.exe --driver redis --dsn "redis://localhost:6379/0" --queue email,sms --concurrency 20
+  ```
+
 ## Running Tests
 
 ```powershell
@@ -386,6 +538,7 @@ go test ./... -v
 
 Expected output:
 ```text
+?   	github.com/wesleyskap/orkai-runiq/v2/cmd/runiq	[no test files]
 === RUN   TestMatchCron
 --- PASS: TestMatchCron (0.00s)
 === RUN   TestWorkerPoolCronScheduler_LockAcquired
@@ -394,12 +547,26 @@ Expected output:
 --- PASS: TestWorkerPoolCronScheduler_LockDenied (0.00s)
 === RUN   TestWorkerPoolCronScheduler_ProcessMatching
 --- PASS: TestWorkerPoolCronScheduler_ProcessMatching (0.01s)
+=== RUN   TestComputeBackoffDelay_CapsAtOneHour
+--- PASS: TestComputeBackoffDelay_CapsAtOneHour (0.00s)
+=== RUN   TestComputeBackoffDelay_Exponential
+--- PASS: TestComputeBackoffDelay_Exponential (0.00s)
+=== RUN   TestComputeBackoffDelay_NonNegative
+--- PASS: TestComputeBackoffDelay_NonNegative (0.00s)
 === RUN   TestWorkerPoolWeightedRotation
 --- PASS: TestWorkerPoolWeightedRotation (0.00s)
 === RUN   TestWorkerPoolStrictPriorityFallback
 --- PASS: TestWorkerPoolStrictPriorityFallback (0.00s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/queue	0.373s
+ok  	github.com/wesleyskap/orkai-runiq/v2/queue	0.392s
+=== RUN   TestClientBatchCreation
+--- PASS: TestClientBatchCreation (0.00s)
+=== RUN   TestPostgresBatchFlow
+--- PASS: TestPostgresBatchFlow (0.19s)
+=== RUN   TestRedisBatchFlow
+--- PASS: TestRedisBatchFlow (0.17s)
+=== RUN   TestBatchFailureDoesNotTriggerCallback
+--- PASS: TestBatchFailureDoesNotTriggerCallback (0.52s)
 === RUN   TestJobEnvelopeSerialization
 --- PASS: TestJobEnvelopeSerialization (0.00s)
 === RUN   TestJobInterfaceConformance
@@ -410,12 +577,56 @@ ok  	github.com/wesleyskap/orkai-runiq/queue	0.373s
 --- PASS: TestDashboardUIEndpoint (0.03s)
 === RUN   TestAdminEndpoints
 --- PASS: TestAdminEndpoints (0.00s)
+=== RUN   TestDashboardWithMiddleware
+--- PASS: TestDashboardWithMiddleware (0.00s)
+=== RUN   TestAdminPauseResumeEndpoints
+--- PASS: TestAdminPauseResumeEndpoints (0.00s)
+=== RUN   TestSqliteStorageFlow
+=== RUN   TestSqliteStorageFlow/EnqueueAndDequeue
+=== RUN   TestSqliteStorageFlow/RetryFlowAndBackoff
+=== RUN   TestSqliteStorageFlow/AdminActions
+=== RUN   TestSqliteStorageFlow/UniqueJobs
+=== RUN   TestSqliteStorageFlow/ActiveProcesses
+=== RUN   TestSqliteStorageFlow/ThrottlingAndRateLimiting
+=== RUN   TestSqliteStorageFlow/Batches
+--- PASS: TestSqliteStorageFlow (0.15s)
+    --- PASS: TestSqliteStorageFlow/EnqueueAndDequeue (0.00s)
+    --- PASS: TestSqliteStorageFlow/RetryFlowAndBackoff (0.00s)
+    --- PASS: TestSqliteStorageFlow/AdminActions (0.00s)
+    --- PASS: TestSqliteStorageFlow/UniqueJobs (0.00s)
+    --- PASS: TestSqliteStorageFlow/ActiveProcesses (0.00s)
+    --- PASS: TestSqliteStorageFlow/ThrottlingAndRateLimiting (0.15s)
+    --- PASS: TestSqliteStorageFlow/Batches (0.00s)
 === RUN   TestPostgresStorageFlow
-    storage_test.go:34: skipping postgres storage tests, service unreachable
---- SKIP: TestPostgresStorageFlow (0.01s)
+=== RUN   TestPostgresStorageFlow/EnqueueAndDequeue
+=== RUN   TestPostgresStorageFlow/SkipLockedConcurrency
+=== RUN   TestPostgresStorageFlow/RetryFlowAndBackoff
+=== RUN   TestPostgresStorageFlow/AdminActions
+=== RUN   TestPostgresStorageFlow/UniqueJobs
+=== RUN   TestPostgresStorageFlow/ActiveProcesses
+=== RUN   TestPostgresStorageFlow/ThrottlingAndRateLimiting
+--- PASS: TestPostgresStorageFlow (0.31s)
+    --- PASS: TestPostgresStorageFlow/EnqueueAndDequeue (0.00s)
+    --- PASS: TestPostgresStorageFlow/SkipLockedConcurrency (0.02s)
+    --- PASS: TestPostgresStorageFlow/RetryFlowAndBackoff (0.03s)
+    --- PASS: TestPostgresStorageFlow/AdminActions (0.03s)
+    --- PASS: TestPostgresStorageFlow/UniqueJobs (0.02s)
+    --- PASS: TestPostgresStorageFlow/ActiveProcesses (0.01s)
+    --- PASS: TestPostgresStorageFlow/ThrottlingAndRateLimiting (0.18s)
 === RUN   TestRedisStorageFlow
-    storage_test.go:85: skipping redis storage tests, service unreachable
---- SKIP: TestRedisStorageFlow (2.00s)
+=== RUN   TestRedisStorageFlow/EnqueueAndDequeue
+=== RUN   TestRedisStorageFlow/RetryFlowAndBackoff
+=== RUN   TestRedisStorageFlow/AdminActions
+=== RUN   TestRedisStorageFlow/UniqueJobs
+=== RUN   TestRedisStorageFlow/ActiveProcesses
+=== RUN   TestRedisStorageFlow/ThrottlingAndRateLimiting
+--- PASS: TestRedisStorageFlow (0.27s)
+    --- PASS: TestRedisStorageFlow/EnqueueAndDequeue (0.02s)
+    --- PASS: TestRedisStorageFlow/RetryFlowAndBackoff (0.02s)
+    --- PASS: TestRedisStorageFlow/AdminActions (0.02s)
+    --- PASS: TestRedisStorageFlow/UniqueJobs (0.01s)
+    --- PASS: TestRedisStorageFlow/ActiveProcesses (0.01s)
+    --- PASS: TestRedisStorageFlow/ThrottlingAndRateLimiting (0.17s)
 === RUN   TestOTelTracer_ExtractAndInjectTrace
 --- PASS: TestOTelTracer_ExtractAndInjectTrace (0.00s)
 === RUN   TestOTelTracer_Metrics
@@ -434,15 +645,15 @@ ok  	github.com/wesleyskap/orkai-runiq/queue	0.373s
 --- PASS: TestClientScheduling (0.00s)
 === RUN   TestWorkerProcessRegistration
 --- PASS: TestWorkerProcessRegistration (0.05s)
-=== RUN   TestClientBatchCreation
---- PASS: TestClientBatchCreation (0.00s)
-=== RUN   TestPostgresBatchFlow
---- PASS: TestPostgresBatchFlow (0.15s)
-=== RUN   TestRedisBatchFlow
---- PASS: TestRedisBatchFlow (0.12s)
-=== RUN   TestBatchFailureDoesNotTriggerCallback
---- PASS: TestBatchFailureDoesNotTriggerCallback (0.50s)
+=== RUN   TestWorkerPoolMaxConcurrency
+--- PASS: TestWorkerPoolMaxConcurrency (0.05s)
+=== RUN   TestWorkerPoolRateLimit
+--- PASS: TestWorkerPoolRateLimit (0.05s)
+=== RUN   TestWorkerPoolShutdown
+--- PASS: TestWorkerPoolShutdown (0.05s)
+=== RUN   TestWorkerPoolQueuePause
+--- PASS: TestWorkerPoolQueuePause (0.10s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/test	3.655s
+ok  	github.com/wesleyskap/orkai-runiq/v2/test	2.233s
 ```
 
