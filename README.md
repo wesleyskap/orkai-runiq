@@ -398,6 +398,111 @@ server := queue.NewServer(storage, ":8080", queue.WithMiddleware(authMiddleware)
 
 Runiq defines telemetry boundaries using simple, pluggable interfaces. By default, it falls back to Go standard library logging (slog/log) and skips metrics recording. Integration with external telemetry engines (like orkai-observability) can be enabled by supplying custom implementations of logging and tracing interfaces.
 
+### Trace Propagation
+
+Runiq propagates `trace_id` and `span_id` through every job's lifecycle. The `Tracer` interface (`queue/queue.go`) controls this:
+
+```go
+type Tracer interface {
+    ExtractTrace(ctx context.Context) (traceID, spanID string)
+    InjectTrace(ctx context.Context, traceID, spanID string) context.Context
+    RecordLatency(ctx context.Context, name string, duration time.Duration, tags map[string]string)
+    IncrementCounter(ctx context.Context, name string, tags map[string]string)
+}
+```
+
+- **`ExtractTrace`** is called when the `Client` enqueues a job — it reads trace IDs from the caller's context and stores them in the `JobEnvelope`.
+- **`InjectTrace`** is called when the `WorkerPool` executes a job — it restores the trace context from the envelope into the worker's context, preserving correlation across async boundaries.
+- **`RecordLatency` / `IncrementCounter`** forward runiq's internal metrics to your telemetry backend.
+
+By default, the default tracer (`defaultTracer`) returns empty strings and no-ops — trace propagation is skipped.
+
+#### 1. Implementing a Custom Tracer
+
+Below is a full example that bridges runiq with the `orkai-observability` library:
+
+```go
+package runiq
+
+import (
+    "context"
+    "crypto/rand"
+    "encoding/hex"
+    "time"
+
+    "github.com/wesleyskap/orkai-observability/v2/observability"
+    "github.com/wesleyskap/orkai-runiq/v2/queue"
+)
+
+type ObservabilityTracer struct{}
+
+func NewObservabilityTracer() *ObservabilityTracer {
+    return &ObservabilityTracer{}
+}
+
+// ExtractTrace reads the trace_id that the HTTP middleware stored in context.
+func (t *ObservabilityTracer) ExtractTrace(ctx context.Context) (traceID, spanID string) {
+    traceID = observability.TraceIDFromContext(ctx)
+    if traceID == "" {
+        return "", ""
+    }
+    spanID = generateSpanID()
+    return traceID, spanID
+}
+
+// InjectTrace restores the trace_id into the worker's execution context.
+func (t *ObservabilityTracer) InjectTrace(ctx context.Context, traceID, spanID string) context.Context {
+    return observability.ContextWithTraceID(ctx, traceID)
+}
+
+func (t *ObservabilityTracer) RecordLatency(ctx context.Context, name string, duration time.Duration, tags map[string]string) {
+    observability.LatencyWithLabels(name, duration, tags)
+}
+
+func (t *ObservabilityTracer) IncrementCounter(ctx context.Context, name string, tags map[string]string) {
+    observability.CounterWithLabels(name, tags)
+}
+
+func generateSpanID() string {
+    b := make([]byte, 8)
+    _, _ = rand.Read(b)
+    return hex.EncodeToString(b)
+}
+```
+
+#### 2. Wiring the Tracer
+
+Pass it to both the **Client** and the **WorkerPool**:
+
+```go
+t := NewObservabilityTracer()
+
+// Client — extracts trace from context when enqueuing
+client := queue.NewClient(storage, queue.WithClientTracer(t))
+
+// WorkerPool — injects trace into context when executing jobs
+pool := queue.NewWorkerPool(storage, 3, queue.WithWorkerTracer(t))
+```
+
+#### 3. End-to-End Flow
+
+```
+HTTP Request (with traceparent header)
+  │
+  ▼
+HTTP Middleware extracts trace_id and stores it in ctx
+  │
+  ▼
+Client.Enqueue(ctx, ...)
+  └─ Tracer.ExtractTrace(ctx) → trace_id + span_id
+  └─ Stored in JobEnvelope → persisted in storage
+  │
+  ▼
+WorkerPool processes the job
+  └─ Tracer.InjectTrace(ctx, trace_id, span_id) → restores trace in worker ctx
+  └─ Job.Perform(ctx, args) → ctx carries the original trace_id
+```
+
 ## Command Line Interface (CLI)
 
 Runiq includes a standalone CLI that allows you to start worker pools and dashboard servers directly from the command line without writing Go code.
