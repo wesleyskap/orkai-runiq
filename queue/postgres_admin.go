@@ -185,6 +185,23 @@ func (p *PostgresStorage) ClearQueue(ctx context.Context, queue string) error {
 }
 
 func (p *PostgresStorage) GetStats(ctx context.Context) (*Stats, error) {
+	var stats Stats
+	queueMap, err := p.fetchQueueStats(ctx, &stats)
+	if err != nil {
+		return nil, err
+	}
+	p.applyPausedQueues(ctx, queueMap)
+	for _, qs := range queueMap {
+		stats.Queues = append(stats.Queues, *qs)
+	}
+	if err := p.fetchRecentJobs(ctx, &stats); err != nil {
+		return nil, err
+	}
+	p.loadActiveProcesses(ctx, &stats)
+	return &stats, nil
+}
+
+func (p *PostgresStorage) fetchQueueStats(ctx context.Context, stats *Stats) (map[string]*QueueStats, error) {
 	query := `
 		SELECT queue, status, COUNT(*)
 		FROM runiq_jobs
@@ -194,8 +211,10 @@ func (p *PostgresStorage) GetStats(ctx context.Context) (*Stats, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	return p.scanQueueStatsRows(rows, stats)
+}
 
-	var stats Stats
+func (p *PostgresStorage) scanQueueStatsRows(rows *sql.Rows, stats *Stats) (map[string]*QueueStats, error) {
 	queueMap := make(map[string]*QueueStats)
 	for rows.Next() {
 		var qName, status string
@@ -203,41 +222,91 @@ func (p *PostgresStorage) GetStats(ctx context.Context) (*Stats, error) {
 		if err := rows.Scan(&qName, &status, &count); err != nil {
 			return nil, err
 		}
-		p.accumulateStats(&stats, queueMap, qName, status, count)
+		p.accumulateStats(stats, queueMap, qName, status, count)
 	}
-	for _, qs := range queueMap {
-		stats.Queues = append(stats.Queues, *qs)
-	}
+	return queueMap, nil
+}
 
-	jobsQuery := `
+func (p *PostgresStorage) applyPausedQueues(ctx context.Context, queueMap map[string]*QueueStats) {
+	rows, err := p.db.QueryContext(ctx, "SELECT queue FROM runiq_paused_queues")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var qName string
+		if err := rows.Scan(&qName); err == nil {
+			p.getOrCreateQueueStats(queueMap, qName).Paused = true
+		}
+	}
+}
+
+func (p *PostgresStorage) getOrCreateQueueStats(queueMap map[string]*QueueStats, qName string) *QueueStats {
+	qs, ok := queueMap[qName]
+	if !ok {
+		qs = &QueueStats{Name: qName}
+		queueMap[qName] = qs
+	}
+	return qs
+}
+
+func (p *PostgresStorage) fetchRecentJobs(ctx context.Context, stats *Stats) error {
+	query := `
 		SELECT job_id, queue, name, status, trace_id, error_message, created_at
 		FROM runiq_jobs
 		ORDER BY created_at DESC
 		LIMIT 100`
-	jRows, err := p.db.QueryContext(ctx, jobsQuery)
+	rows, err := p.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer jRows.Close()
+	defer rows.Close()
+	return p.scanRecentJobsRows(rows, stats)
+}
 
-	for jRows.Next() {
+func (p *PostgresStorage) scanRecentJobsRows(rows *sql.Rows, stats *Stats) error {
+	for rows.Next() {
 		var jd JobDetail
 		var createdAt time.Time
 		var errMsg sql.NullString
-		if err := jRows.Scan(&jd.JobID, &jd.Queue, &jd.Name, &jd.Status, &jd.TraceID, &errMsg, &createdAt); err != nil {
-			return nil, err
+		err := rows.Scan(&jd.JobID, &jd.Queue, &jd.Name, &jd.Status, &jd.TraceID, &errMsg, &createdAt)
+		if err != nil {
+			return err
 		}
 		jd.ErrorMessage = errMsg.String
 		jd.CreatedAt = createdAt.Format(time.RFC3339)
 		stats.Jobs = append(stats.Jobs, jd)
 	}
+	return nil
+}
 
+func (p *PostgresStorage) loadActiveProcesses(ctx context.Context, stats *Stats) {
 	activeProcesses, err := p.GetActiveProcesses(ctx)
 	if err == nil {
 		stats.Processes = activeProcesses
 	}
+}
 
-	return &stats, nil
+func (p *PostgresStorage) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
+	var exists bool
+	query := "SELECT EXISTS(SELECT 1 FROM runiq_paused_queues WHERE queue = $1)"
+	err := p.db.QueryRowContext(ctx, query, queue).Scan(&exists)
+	return exists, err
+}
+
+func (p *PostgresStorage) PauseQueue(ctx context.Context, queue string) error {
+	query := `
+		INSERT INTO runiq_paused_queues (queue)
+		VALUES ($1)
+		ON CONFLICT (queue) DO NOTHING`
+	_, err := p.db.ExecContext(ctx, query, queue)
+	return err
+}
+
+func (p *PostgresStorage) ResumeQueue(ctx context.Context, queue string) error {
+	query := "DELETE FROM runiq_paused_queues WHERE queue = $1"
+	_, err := p.db.ExecContext(ctx, query, queue)
+	return err
 }
 
 func (p *PostgresStorage) accumulateStats(stats *Stats, queueMap map[string]*QueueStats, qName, status string, count int64) {

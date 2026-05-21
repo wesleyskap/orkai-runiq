@@ -24,6 +24,7 @@ type ServerOption func(*Server)
 
 // WithMiddleware adds one or more HTTP middlewares to the dashboard server.
 // Usage example:
+//
 //	server := queue.NewServer(storage, ":8080", queue.WithMiddleware(auth))
 func WithMiddleware(mws ...func(http.Handler) http.Handler) ServerOption {
 	return func(s *Server) {
@@ -33,6 +34,7 @@ func WithMiddleware(mws ...func(http.Handler) http.Handler) ServerOption {
 
 // NewServer instantiates a new Dashboard Server.
 // Usage example:
+//
 //	server := queue.NewServer(storage, ":8080")
 func NewServer(storage ServerStorage, port string, opts ...ServerOption) *Server {
 	s := &Server{
@@ -56,6 +58,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/jobs/retry", s.handleRetry)
 	mux.HandleFunc("/api/jobs/cancel", s.handleCancel)
 	mux.HandleFunc("/api/queues/clear", s.handleClearQueue)
+	mux.HandleFunc("/api/queues/pause", s.handlePauseQueue)
+	mux.HandleFunc("/api/queues/resume", s.handleResumeQueue)
 
 	sub, err := fs.Sub(assetsFS, "assets")
 	if err == nil {
@@ -80,7 +84,7 @@ func (s *Server) Start() error {
 	return err
 }
 
-// Shutdown stops the listener gracefully.
+// Shutdown stops the listener.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
 }
@@ -140,6 +144,40 @@ func (s *Server) handleClearQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.storage.ClearQueue(r.Context(), queueName); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handlePauseQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "Missing queue name parameter", http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.PauseQueue(r.Context(), name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleResumeQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "Missing queue name parameter", http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.ResumeQueue(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

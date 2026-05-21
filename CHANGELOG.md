@@ -2,6 +2,17 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.2.0] - 2026-05-21
+
+### Added
+- **Worker Shutdown**: Added a WaitGroup-based shutdown mechanism to `WorkerPool` that halts polling and awaits completion of executing jobs upon context cancellation.
+- **Shutdown Timeout Option**: Introduced `WithShutdownTimeout(timeout time.Duration)` worker option to configure maximum wait time (defaults to 10s).
+- **Dynamic Queue Pause & Resume**: Added capability to pause and resume individual job queues dynamically at runtime without restarting workers.
+- **Persistent Pause/Resume Storage**: Implemented storage of paused queue names using the `runiq_paused_queues` table in PostgreSQL and the `runiq:paused_queues` Set in Redis.
+- **Queue Pause & Resume API**: Added `/api/queues/pause` and `/api/queues/resume` endpoints to the admin dashboard API.
+- **Dashboard UI Actions**: Integrated interactive Pause/Resume buttons and status badges in the dashboard SPA's queues table.
+- **Integration Tests**: Added `TestWorkerPoolShutdown`, `TestWorkerPoolQueuePause`, and `TestAdminPauseResumeEndpoints`.
+
 ## [2.1.0] - 2026-05-21
 
 ### Added

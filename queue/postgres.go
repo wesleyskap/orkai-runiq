@@ -198,6 +198,10 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		status VARCHAR(50) NOT NULL DEFAULT 'open',
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS runiq_paused_queues (
+		queue VARCHAR(255) PRIMARY KEY
+	);
 	`
 	_, err := db.ExecContext(ctx, schema)
 	return err

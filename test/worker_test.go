@@ -67,6 +67,7 @@ func (p *panicJob) Perform(ctx context.Context, args []byte) error {
 
 // TestClientTraceExtraction asserts that Client enqueues jobs with propagated trace details.
 // Usage example:
+//
 //	go test -v ./test/...
 func TestClientTraceExtraction(t *testing.T) {
 	fakeStore := &FakeStorage{}
@@ -115,6 +116,7 @@ func TestClientEnqueueUnique(t *testing.T) {
 
 // TestWorkerPoolExecution validates worker startup, context injection, and success telemetry.
 // Usage example:
+//
 //	go test -v ./test/...
 func TestWorkerPoolExecution(t *testing.T) {
 	fakeStore := &FakeStorage{}
@@ -159,6 +161,7 @@ func TestWorkerPoolExecution(t *testing.T) {
 
 // TestWorkerPoolPanicRecovery validates that worker handles panics without crashing and marks storage failures.
 // Usage example:
+//
 //	go test -v ./test/...
 func TestWorkerPoolPanicRecovery(t *testing.T) {
 	fakeStore := &FakeStorage{}
@@ -347,4 +350,51 @@ func TestWorkerPoolRateLimit(t *testing.T) {
 	}
 }
 
+type slowJob struct {
+	done chan struct{}
+}
 
+func (s *slowJob) Perform(ctx context.Context, args []byte) error {
+	time.Sleep(50 * time.Millisecond)
+	close(s.done)
+	return nil
+}
+
+func TestWorkerPoolShutdown(t *testing.T) {
+	fakeStore := &FakeStorage{}
+	sj := &slowJob{done: make(chan struct{})}
+	pool := queue.NewWorkerPool(fakeStore, 1, queue.WithShutdownTimeout(100*time.Millisecond))
+	pool.Register("SlowJob", sj)
+	env := &queue.JobEnvelope{JobID: "job-slow", Queue: "default", Name: "SlowJob", Args: []byte("{}")}
+	_ = fakeStore.Enqueue(context.Background(), env)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	_ = pool.Start(ctx, "default")
+	select {
+	case <-sj.done:
+	default:
+		t.Error("expected slow job to finish before shutdown completed")
+	}
+}
+
+func TestWorkerPoolQueuePause(t *testing.T) {
+	fakeStore := &FakeStorage{}
+	fakeStore.PausedQueues = map[string]bool{"paused-q": true}
+	job := &trackableJob{}
+	pool := queue.NewWorkerPool(fakeStore, 1)
+	pool.Register("TrackableJob", job)
+	env := &queue.JobEnvelope{JobID: "job-p", Queue: "paused-q", Name: "TrackableJob", Args: []byte("{}")}
+	_ = fakeStore.Enqueue(context.Background(), env)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	_ = pool.Start(ctx, "paused-q")
+	if job.executed {
+		t.Error("expected job in paused queue not to execute")
+	}
+}

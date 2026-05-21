@@ -608,6 +608,17 @@
             }
         }
 
+        async function toggleQueue(queueName, action) {
+            if (!confirm(`Are you sure you want to ${action} queue "${queueName}"?`)) return;
+            try {
+                const res = await fetch(`/api/queues/${action}?name=${queueName}`, { method: 'POST' });
+                if (!res.ok) throw new Error(`Failed to ${action} queue`);
+                fetchStats();
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
         async function fetchStats() {
             try {
                 const res = await fetch('/api/stats');
@@ -677,14 +688,23 @@
 
                     data.queues.forEach(q => {
                         const tr = document.createElement('tr');
+                        const pausedBadge = q.paused 
+                            ? `<span class="badge" style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); color: #fbbf24; margin-left: 0.5rem; font-size: 0.7rem; padding: 0.15rem 0.4rem; vertical-align: middle;">Paused</span>` 
+                            : '';
+                        const actionBtn = q.paused
+                            ? `<button class="btn btn-primary" onclick="toggleQueue('${q.name}', 'resume')">Resume</button>`
+                            : `<button class="btn btn-warning" onclick="toggleQueue('${q.name}', 'pause')">Pause</button>`;
                         tr.innerHTML = `
-                            <td style="font-weight: 600;">${q.name}</td>
+                            <td style="font-weight: 600;">${q.name}${pausedBadge}</td>
                             <td style="color: var(--pending);">${q.pending}</td>
                             <td style="color: var(--running);">${q.running}</td>
                             <td style="color: var(--running);">${q.processed || 0}</td>
                             <td style="color: var(--failed);">${q.failed}</td>
                             <td>
-                                <button class="btn btn-warning" onclick="clearQueue('${q.name}')">Clear</button>
+                                <div class="actions-cell">
+                                    ${actionBtn}
+                                    <button class="btn btn-danger" onclick="clearQueue('${q.name}')">Clear</button>
+                                </div>
                             </td>
                         `;
                         tbody.appendChild(tr);

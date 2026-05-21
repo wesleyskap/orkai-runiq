@@ -24,6 +24,7 @@ type FakeStorage struct {
 	RunningCountToReturn map[string]int
 	RateLimitToReturn    map[string]bool
 	Postponed            []string
+	PausedQueues         map[string]bool
 }
 
 func (f *FakeStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -130,6 +131,30 @@ func (f *FakeStorage) EnqueueInBatch(ctx context.Context, batchID string, env *q
 func (f *FakeStorage) SubmitBatch(ctx context.Context, batchID string) error {
 	return nil
 }
+
+func (f *FakeStorage) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
+	if f.PausedQueues == nil {
+		return false, nil
+	}
+	return f.PausedQueues[queue], nil
+}
+
+func (f *FakeStorage) PauseQueue(ctx context.Context, queue string) error {
+	if f.PausedQueues == nil {
+		f.PausedQueues = make(map[string]bool)
+	}
+	f.PausedQueues[queue] = true
+	return nil
+}
+
+func (f *FakeStorage) ResumeQueue(ctx context.Context, queue string) error {
+	if f.PausedQueues == nil {
+		return nil
+	}
+	f.PausedQueues[queue] = false
+	return nil
+}
+
 
 // DummyJob implements queue.Job for verification.
 type DummyJob struct {

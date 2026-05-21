@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -19,6 +20,7 @@ type HandlerOption func(*handlerConfig)
 
 // WithMaxConcurrency configures the maximum global concurrency limit for a job.
 // Usage example:
+//
 //	pool.Register("Payment", job, queue.WithMaxConcurrency(5))
 func WithMaxConcurrency(max int) HandlerOption {
 	return func(cfg *handlerConfig) {
@@ -28,6 +30,7 @@ func WithMaxConcurrency(max int) HandlerOption {
 
 // WithRateLimit configures the maximum execution rate limit for a job.
 // Usage example:
+//
 //	pool.Register("SMS", job, queue.WithRateLimit(100, time.Minute))
 func WithRateLimit(limit int, period time.Duration) HandlerOption {
 	return func(cfg *handlerConfig) {
@@ -38,21 +41,24 @@ func WithRateLimit(limit int, period time.Duration) HandlerOption {
 
 // WorkerPool processes jobs concurrently from the storage backend.
 type WorkerPool struct {
-	firstQueues  []string
-	cronJobs     []CronJob
-	storage      WorkerPoolStorage
-	logger       Logger
-	tracer       Tracer
-	processID    string
-	registry     map[string]Job
-	configs      map[string]handlerConfig
-	weights      map[string]int
-	fetchCounter uint64
-	concurrency  int
+	firstQueues     []string
+	cronJobs        []CronJob
+	storage         WorkerPoolStorage
+	logger          Logger
+	tracer          Tracer
+	processID       string
+	registry        map[string]Job
+	configs         map[string]handlerConfig
+	weights         map[string]int
+	fetchCounter    uint64
+	concurrency     int
+	shutdownTimeout time.Duration
+	activeWorkers   sync.WaitGroup
 }
 
 // NewWorkerPool instantiates a new WorkerPool.
 // Usage example:
+//
 //	pool := queue.NewWorkerPool(storage, 5, queue.WithWorkerLogger(logger))
 func NewWorkerPool(storage WorkerPoolStorage, concurrency int, opts ...WorkerOption) *WorkerPool {
 	hostname, _ := os.Hostname()
@@ -63,14 +69,15 @@ func NewWorkerPool(storage WorkerPoolStorage, concurrency int, opts ...WorkerOpt
 	processID := fmt.Sprintf("%s:%d:%d", hostname, pid, time.Now().UnixNano()%100000)
 
 	w := &WorkerPool{
-		storage:     storage,
-		logger:      &defaultLogger{},
-		tracer:      &defaultTracer{},
-		processID:   processID,
-		registry:    make(map[string]Job),
-		configs:     make(map[string]handlerConfig),
-		weights:     make(map[string]int),
-		concurrency: concurrency,
+		storage:         storage,
+		logger:          &defaultLogger{},
+		tracer:          &defaultTracer{},
+		processID:       processID,
+		registry:        make(map[string]Job),
+		configs:         make(map[string]handlerConfig),
+		weights:         make(map[string]int),
+		concurrency:     concurrency,
+		shutdownTimeout: 10 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -102,6 +109,13 @@ func WithQueueWeights(weights map[string]int) WorkerOption {
 	}
 }
 
+// WithShutdownTimeout sets the maximum duration to wait for active jobs to finish during shutdown.
+func WithShutdownTimeout(timeout time.Duration) WorkerOption {
+	return func(w *WorkerPool) {
+		w.shutdownTimeout = timeout
+	}
+}
+
 // Register maps a job name to a Job implementation with optional rate limiting/concurrency.
 func (w *WorkerPool) Register(name string, job Job, opts ...HandlerOption) {
 	w.registry[name] = job
@@ -124,20 +138,31 @@ func (w *WorkerPool) RegisterCron(spec, queue, name string, payload []byte) {
 
 // Start spawns workers and begins consuming from specified queues.
 func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
-	if len(w.weights) > 0 {
-		var fqs []string
-		for _, q := range queues {
-			wt := 1
-			if val, ok := w.weights[q]; ok && val > 0 {
-				wt = val
-			}
-			for i := 0; i < wt; i++ {
-				fqs = append(fqs, q)
-			}
-		}
-		w.firstQueues = fqs
-	}
+	w.setupWeightedQueues(queues)
+	w.registerProcess(ctx, queues)
+	w.startBackgroundLoops(ctx, queues)
+	w.runProcessingLoop(ctx, queues)
+	return ctx.Err()
+}
 
+func (w *WorkerPool) setupWeightedQueues(queues []string) {
+	if len(w.weights) == 0 {
+		return
+	}
+	var fqs []string
+	for _, q := range queues {
+		wt := 1
+		if val, ok := w.weights[q]; ok && val > 0 {
+			wt = val
+		}
+		for i := 0; i < wt; i++ {
+			fqs = append(fqs, q)
+		}
+	}
+	w.firstQueues = fqs
+}
+
+func (w *WorkerPool) registerProcess(ctx context.Context, queues []string) {
 	info := &ProcessInfo{
 		Queues:      queues,
 		HeartbeatAt: time.Now(),
@@ -147,62 +172,107 @@ func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
 	if err := w.storage.RegisterProcess(ctx, info); err != nil {
 		w.logger.Error(ctx, "failed to register worker process", err, "process_id", w.processID)
 	}
+}
 
+func (w *WorkerPool) startBackgroundLoops(ctx context.Context, queues []string) {
 	go w.startHeartbeat(ctx)
 	if len(w.cronJobs) > 0 {
 		go w.startCronScheduler(ctx)
 	}
 	go w.startScheduledPoller(ctx, queues)
+}
 
+func (w *WorkerPool) runProcessingLoop(ctx context.Context, queues []string) {
 	sem := make(chan struct{}, w.concurrency)
-
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			w.acquireAndProcess(ctx, sem, queues)
+		if err := ctx.Err(); err != nil {
+			w.gracefulWait()
+			return
 		}
+		w.acquireAndProcess(ctx, sem, queues)
+	}
+}
+
+func (w *WorkerPool) gracefulWait() {
+	done := make(chan struct{})
+	go func() {
+		w.activeWorkers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		w.logger.Info(context.Background(), "all workers finished")
+	case <-time.After(w.shutdownTimeout):
+		w.logger.Error(context.Background(), "shutdown timeout reached", nil)
 	}
 }
 
 func (w *WorkerPool) acquireAndProcess(ctx context.Context, sem chan struct{}, queues []string) {
 	select {
 	case sem <- struct{}{}:
-		job, err := w.fetchNext(ctx, queues)
-		if err != nil || job == nil {
-			<-sem
-			time.Sleep(100 * time.Millisecond)
-			return
-		}
-		go w.runJobWithSemaphore(ctx, sem, job)
+		w.fetchAndSpawn(ctx, sem, queues)
 	case <-ctx.Done():
 	}
 }
 
+func (w *WorkerPool) fetchAndSpawn(ctx context.Context, sem chan struct{}, queues []string) {
+	job, err := w.fetchNext(ctx, queues)
+	if err != nil || job == nil {
+		<-sem
+		time.Sleep(100 * time.Millisecond)
+		return
+	}
+	w.activeWorkers.Add(1)
+	go w.runJobWithSemaphore(ctx, sem, job)
+}
+
 func (w *WorkerPool) runJobWithSemaphore(ctx context.Context, sem chan struct{}, env *JobEnvelope) {
-	defer func() { <-sem }()
+	defer func() {
+		<-sem
+		w.activeWorkers.Done()
+	}()
 	w.executeJob(ctx, env)
 }
 
-func (w *WorkerPool) fetchNext(ctx context.Context, queues []string) (*JobEnvelope, error) {
-	if len(w.firstQueues) > 0 {
-		searchOrder := w.buildSearchOrder(queues)
-		for _, q := range searchOrder {
-			env, err := w.storage.Dequeue(ctx, q)
-			if err != nil {
-				return nil, err
-			}
-			if env == nil {
-				continue
-			}
-			if allowed := w.checkLimitsAndPostpone(ctx, env); allowed {
-				return env, nil
-			}
-		}
+func (w *WorkerPool) dequeueFromQueue(ctx context.Context, q string) (*JobEnvelope, error) {
+	paused, err := w.storage.IsQueuePaused(ctx, q)
+	if err == nil && paused {
 		return nil, nil
 	}
-	return w.fetchStrict(ctx, queues)
+	return w.storage.Dequeue(ctx, q)
+}
+
+func (w *WorkerPool) checkAndDequeue(ctx context.Context, q string) (*JobEnvelope, error) {
+	env, err := w.dequeueFromQueue(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	if env == nil {
+		return nil, nil
+	}
+	if allowed := w.checkLimitsAndPostpone(ctx, env); allowed {
+		return env, nil
+	}
+	return nil, nil
+}
+
+func (w *WorkerPool) fetchNext(ctx context.Context, queues []string) (*JobEnvelope, error) {
+	if len(w.firstQueues) == 0 {
+		return w.fetchStrict(ctx, queues)
+	}
+	searchOrder := w.buildSearchOrder(queues)
+	return w.fetchFromOrder(ctx, searchOrder)
+}
+
+func (w *WorkerPool) fetchFromOrder(ctx context.Context, searchOrder []string) (*JobEnvelope, error) {
+	var env *JobEnvelope
+	var err error
+	i := 0
+	for env == nil && err == nil && i < len(searchOrder) {
+		env, err = w.checkAndDequeue(ctx, searchOrder[i])
+		i++
+	}
+	return env, err
 }
 
 func (w *WorkerPool) buildSearchOrder(queues []string) []string {
@@ -211,27 +281,26 @@ func (w *WorkerPool) buildSearchOrder(queues []string) []string {
 	order := make([]string, 0, len(queues))
 	order = append(order, primary)
 	for _, q := range queues {
-		if q != primary {
-			order = append(order, q)
-		}
+		w.appendIfNotPrimary(&order, q, primary)
 	}
 	return order
 }
 
-func (w *WorkerPool) fetchStrict(ctx context.Context, queues []string) (*JobEnvelope, error) {
-	for _, q := range queues {
-		env, err := w.storage.Dequeue(ctx, q)
-		if err != nil {
-			return nil, err
-		}
-		if env == nil {
-			continue
-		}
-		if allowed := w.checkLimitsAndPostpone(ctx, env); allowed {
-			return env, nil
-		}
+func (w *WorkerPool) appendIfNotPrimary(order *[]string, q, primary string) {
+	if q != primary {
+		*order = append(*order, q)
 	}
-	return nil, nil
+}
+
+func (w *WorkerPool) fetchStrict(ctx context.Context, queues []string) (*JobEnvelope, error) {
+	var env *JobEnvelope
+	var err error
+	i := 0
+	for env == nil && err == nil && i < len(queues) {
+		env, err = w.checkAndDequeue(ctx, queues[i])
+		i++
+	}
+	return env, err
 }
 
 func (w *WorkerPool) checkLimitsAndPostpone(ctx context.Context, env *JobEnvelope) bool {

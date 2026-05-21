@@ -168,3 +168,23 @@ func testAuthorized(t *testing.T, handler http.Handler) {
 	}
 }
 
+func TestAdminPauseResumeEndpoints(t *testing.T) {
+	fakeStore := &FakeStorage{}
+	server := queue.NewServer(fakeStore, ":8989")
+	handler := server.Handler()
+
+	reqPause := httptest.NewRequest(http.MethodPost, "/api/queues/pause?name=test-q", nil)
+	wPause := httptest.NewRecorder()
+	handler.ServeHTTP(wPause, reqPause)
+	if wPause.Code != http.StatusOK || !fakeStore.PausedQueues["test-q"] {
+		t.Errorf("failed to pause queue: code=%d", wPause.Code)
+	}
+
+	reqResume := httptest.NewRequest(http.MethodPost, "/api/queues/resume?name=test-q", nil)
+	wResume := httptest.NewRecorder()
+	handler.ServeHTTP(wResume, reqResume)
+	if wResume.Code != http.StatusOK || fakeStore.PausedQueues["test-q"] {
+		t.Errorf("failed to resume queue: code=%d", wResume.Code)
+	}
+}
+

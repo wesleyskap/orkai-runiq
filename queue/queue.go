@@ -57,6 +57,7 @@ type QueueStats struct {
 	Running   int64  `json:"running"`
 	Failed    int64  `json:"failed"`
 	Processed int64  `json:"processed"`
+	Paused    bool   `json:"paused"`
 }
 
 // Stats holds aggregate and queue-specific job counts.
@@ -128,6 +129,12 @@ type JobAdmin interface {
 	// Usage example:
 	//	err := storage.ClearQueue(ctx, "default")
 	ClearQueue(ctx context.Context, queue string) error
+
+	// PauseQueue pauses processing of a specific queue.
+	PauseQueue(ctx context.Context, queue string) error
+
+	// ResumeQueue resumes processing of a specific queue.
+	ResumeQueue(ctx context.Context, queue string) error
 }
 
 // ProcessRegistry defines worker process lifecycle operations.
@@ -176,6 +183,7 @@ type WorkerPoolStorage interface {
 	ProcessRegistry
 	CronLocker
 	JobThrottler
+	IsQueuePaused(ctx context.Context, queue string) (bool, error)
 }
 
 // ClientStorage is the storage interface required by Client.

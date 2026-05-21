@@ -2,6 +2,8 @@
 
 Orkai Runiq is a background job processor in Go. It is designed to be standalone with zero hard dependencies, while offering optional, interface-driven integration with telemetry and logging engines such as orkai-observability.
 
+![Orkai Runiq Dashboard](queue/assets/orkai-runiq-dashboard.png)
+
 ## Project Structure
 
 * **queue/**: Contains the core interface declarations and payload structural definitions.
@@ -209,6 +211,24 @@ When a `WorkerPool` starts, it automatically registers itself with the storage d
 
 The dashboard UI automatically aggregates these worker heartbeats and renders them in the **Active Processes (Workers)** panel, listing all active processes, their concurrency configurations, and their monitored queues. Dead workers are automatically pruned after 15 seconds of inactivity.
 
+## Worker Shutdown
+
+When a `WorkerPool` receives a cancel/termination signal (such as context cancellation during application shutdown), it initiates a shutdown sequence:
+
+1. **Stop Polling**: The worker pool immediately stops fetching new jobs from the storage backend.
+2. **Await Executing Jobs**: It uses a `sync.WaitGroup` to track and wait for all currently executing job goroutines to complete.
+3. **Shutdown Timeout**: It respects a maximum shutdown wait timeout. If executing jobs do not finish within this duration, the worker pool forces context cancellation on active jobs, letting them fail so that they can be safely re-queued or moved to the DLQ by the storage backend on subsequent runs.
+
+By default, the shutdown timeout is set to **10 seconds**. You can customize this timeout when instantiating the worker pool using the `WithShutdownTimeout` option:
+
+```go
+pool := queue.NewWorkerPool(
+	storage, 
+	5, 
+	queue.WithShutdownTimeout(30 * time.Second), // Wait up to 30s for jobs to finish
+)
+```
+
 ## Weighted Queues
 
 By default, workers poll queues in strict linear priority (the order in which queues are passed to `Start`). To avoid starvation of lower priority queues, Runiq allows you to configure relative weights using the `WithQueueWeights` option:
@@ -304,6 +324,24 @@ if err != nil {
 - **Fail-Fast Failure Isolation**: If any job in the batch fails permanently (i.e. is sent to the Dead Letter Queue after exhausting its retries), the batch status transitions to `'failed'` immediately, preventing the callback from ever running.
 - **Atomic Backend Storage**: Implemented with native transactions in PostgreSQL (using `FOR UPDATE` and count tracking) and pipeline operations in Redis (using hashes and sets).
 
+## Dynamic Queue Pause & Resume
+
+Runiq supports dynamically pausing and resuming queue processing at runtime. This is highly useful during maintenance windows, downstream outages, or database pressure.
+
+### How It Works
+- **Worker Polling Bypass**: When a queue is paused, worker pools skip pulling new jobs from that queue during polling cycles.
+- **Active Jobs Unaffected**: Jobs already in progress are unaffected and execute to completion.
+- **Persistent State**: The paused status is stored in the database, persisting across worker restarts and application redeployments.
+- **Storage Driver Implementations**:
+  - **PostgreSQL**: Stores paused queue names in the auto-migrated `runiq_paused_queues` table.
+  - **Redis**: Stores paused queue names in the Redis Set `runiq:paused_queues`.
+
+### Controlling Pause/Resume State
+
+You can pause and resume queues directly through:
+1. **Dashboard UI**: Interactive **Pause** and **Resume** buttons are available under the queues stats table on the real-time SPA dashboard. A red **Paused** status badge appears next to paused queues.
+2. **Administration API**: Use HTTP POST requests to control queue states programmatically.
+
 ## Administration API & Dashboard Actions
 
 Runiq's dashboard contains interactive buttons to manage tasks directly. The server exposes the following endpoints:
@@ -311,6 +349,8 @@ Runiq's dashboard contains interactive buttons to manage tasks directly. The ser
 * **Retry Job**: `POST /api/jobs/retry?id=<job_id>` resets the attempts counter and schedules a failed job for immediate retry.
 * **Cancel Job**: `POST /api/jobs/cancel?id=<job_id>` deletes a pending, scheduled, or failed job from the queue.
 * **Clear Queue**: `POST /api/queues/clear?name=<queue_name>` removes all pending, active, scheduled, completed, and failed jobs from a specific queue.
+* **Pause Queue**: `POST /api/queues/pause?name=<queue_name>` pauses job processing from the specified queue.
+* **Resume Queue**: `POST /api/queues/resume?name=<queue_name>` resumes job processing from the specified queue.
 
 ## Dashboard Authentication & Custom Middlewares
 

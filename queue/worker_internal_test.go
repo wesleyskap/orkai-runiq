@@ -23,6 +23,11 @@ func (m *mockStorageForWeights) HeartbeatProcess(ctx context.Context, processID 
 	return nil
 }
 
+func (m *mockStorageForWeights) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
+	res := false
+	return res, nil
+}
+
 func TestWorkerPoolWeightedRotation(t *testing.T) {
 	store := &mockStorageForWeights{}
 	pool := NewWorkerPool(store, 1, WithQueueWeights(map[string]int{
