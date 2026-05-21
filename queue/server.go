@@ -13,18 +13,34 @@ var assetsFS embed.FS
 
 // Server serves the dashboard UI and API.
 type Server struct {
-	storage    ServerStorage
-	port       string
-	httpServer *http.Server
+	storage     ServerStorage
+	port        string
+	httpServer  *http.Server
+	middlewares []func(http.Handler) http.Handler
+}
+
+// ServerOption defines functional configuration options for Server.
+type ServerOption func(*Server)
+
+// WithMiddleware adds one or more HTTP middlewares to the dashboard server.
+// Usage example:
+//	server := queue.NewServer(storage, ":8080", queue.WithMiddleware(auth))
+func WithMiddleware(mws ...func(http.Handler) http.Handler) ServerOption {
+	return func(s *Server) {
+		s.middlewares = append(s.middlewares, mws...)
+	}
 }
 
 // NewServer instantiates a new Dashboard Server.
 // Usage example:
 //	server := queue.NewServer(storage, ":8080")
-func NewServer(storage ServerStorage, port string) *Server {
+func NewServer(storage ServerStorage, port string, opts ...ServerOption) *Server {
 	s := &Server{
 		storage: storage,
 		port:    port,
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.httpServer = &http.Server{
 		Addr:    port,
@@ -42,11 +58,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/queues/clear", s.handleClearQueue)
 
 	sub, err := fs.Sub(assetsFS, "assets")
-	if err != nil {
-		return mux
+	if err == nil {
+		mux.Handle("/", http.FileServer(http.FS(sub)))
 	}
-	mux.Handle("/", http.FileServer(http.FS(sub)))
-	return mux
+	return s.applyMiddlewares(mux)
+}
+
+func (s *Server) applyMiddlewares(handler http.Handler) http.Handler {
+	for i := len(s.middlewares) - 1; i >= 0; i-- {
+		handler = s.middlewares[i](handler)
+	}
+	return handler
 }
 
 // Start runs the HTTP listener.

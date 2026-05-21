@@ -2,6 +2,13 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.1.0] - 2026-05-21
+
+### Added
+- **Pluggable Dashboard Middleware Support**: Added support for injecting arbitrary HTTP middlewares (e.g. Basic Auth, JWT, OAuth) into the dashboard `Server` using the `ServerOption` functional option pattern.
+- **`WithMiddleware` functional option**: Added `WithMiddleware(mws ...func(http.Handler) http.Handler) ServerOption` to configure middlewares.
+- **Middleware integration tests**: Added `TestDashboardWithMiddleware` to verify the execution, interception, and header-modifying behaviors of injected middlewares.
+
 ## [2.0.0] - 2026-05-20
 
 ### Changed

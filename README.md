@@ -312,6 +312,28 @@ Runiq's dashboard contains interactive buttons to manage tasks directly. The ser
 * **Cancel Job**: `POST /api/jobs/cancel?id=<job_id>` deletes a pending, scheduled, or failed job from the queue.
 * **Clear Queue**: `POST /api/queues/clear?name=<queue_name>` removes all pending, active, scheduled, completed, and failed jobs from a specific queue.
 
+## Dashboard Authentication & Custom Middlewares
+
+By default, Runiq exposes the dashboard UI and API endpoints without authentication. To secure the dashboard, you can inject standard HTTP middlewares (e.g. Basic Auth, JWT, session validation) using `queue.WithMiddleware`:
+
+```go
+// 1. Define an authentication middleware
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "admin" || password != "secret" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Runiq Dashboard"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// 2. Initialize and start the Dashboard Server with the middleware
+server := queue.NewServer(storage, ":8080", queue.WithMiddleware(authMiddleware))
+```
+
 ## Telemetry Integration
 
 Runiq defines telemetry boundaries using simple, pluggable interfaces. By default, it falls back to Go standard library logging (slog/log) and skips metrics recording. Integration with external telemetry engines (like orkai-observability) can be enabled by supplying custom implementations of logging and tracing interfaces.

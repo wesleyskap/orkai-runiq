@@ -117,3 +117,54 @@ func TestAdminEndpoints(t *testing.T) {
 	}
 }
 
+type authMiddleware struct {
+	next http.Handler
+}
+
+func (am *authMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Auth-Token") != "super-secret" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("X-Auth-Status", "verified")
+	am.next.ServeHTTP(w, r)
+}
+
+func withTestAuth() queue.ServerOption {
+	mw := func(next http.Handler) http.Handler {
+		return &authMiddleware{next: next}
+	}
+	return queue.WithMiddleware(mw)
+}
+
+// TestDashboardWithMiddleware validates middleware interception.
+func TestDashboardWithMiddleware(t *testing.T) {
+	fakeStore := &FakeStorage{}
+	server := queue.NewServer(fakeStore, ":8989", withTestAuth())
+	handler := server.Handler()
+	testUnauthorized(t, handler)
+	testAuthorized(t, handler)
+}
+
+func testUnauthorized(t *testing.T, handler http.Handler) {
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func testAuthorized(t *testing.T, handler http.Handler) {
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	req.Header.Set("X-Auth-Token", "super-secret")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if w.Header().Get("X-Auth-Status") != "verified" {
+		t.Errorf("expected X-Auth-Status to be verified")
+	}
+}
+
