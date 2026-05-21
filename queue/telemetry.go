@@ -91,7 +91,7 @@ func convertTagsToAttrs(tags map[string]string) []attribute.KeyValue {
 // RegisterQueueDepthMetrics registers an observable gauge to report pending queue depths dynamically.
 // Usage example:
 //	err := t.RegisterQueueDepthMetrics(storage, []string{"default"})
-func (o *OTelTracer) RegisterQueueDepthMetrics(storage Storage, queues []string) error {
+func (o *OTelTracer) RegisterQueueDepthMetrics(storage JobStats, queues []string) error {
 	gauge, err := o.meter.Int64ObservableGauge("runiq_queue_depth",
 		metric.WithDescription("Current depth of the job queue"),
 	)

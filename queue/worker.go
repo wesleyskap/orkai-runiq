@@ -2,7 +2,6 @@ package queue
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -41,7 +40,7 @@ func WithRateLimit(limit int, period time.Duration) HandlerOption {
 type WorkerPool struct {
 	firstQueues  []string
 	cronJobs     []CronJob
-	storage      Storage
+	storage      WorkerPoolStorage
 	logger       Logger
 	tracer       Tracer
 	processID    string
@@ -55,7 +54,7 @@ type WorkerPool struct {
 // NewWorkerPool instantiates a new WorkerPool.
 // Usage example:
 //	pool := queue.NewWorkerPool(storage, 5, queue.WithWorkerLogger(logger))
-func NewWorkerPool(storage Storage, concurrency int, opts ...WorkerOption) *WorkerPool {
+func NewWorkerPool(storage WorkerPoolStorage, concurrency int, opts ...WorkerOption) *WorkerPool {
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "unknown"
@@ -146,45 +145,16 @@ func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
 		Concurrency: w.concurrency,
 	}
 	if err := w.storage.RegisterProcess(ctx, info); err != nil {
-		w.logger.Error(ctx, "failed to register worker process", err)
+		w.logger.Error(ctx, "failed to register worker process", err, "process_id", w.processID)
 	}
 
-	// Start process heartbeat goroutine
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_ = w.storage.HeartbeatProcess(ctx, w.processID)
-			}
-		}
-	}()
-
-	// Start cron scheduler goroutine
+	go w.startHeartbeat(ctx)
 	if len(w.cronJobs) > 0 {
 		go w.startCronScheduler(ctx)
 	}
+	go w.startScheduledPoller(ctx, queues)
 
 	sem := make(chan struct{}, w.concurrency)
-
-	// Start scheduled jobs poller goroutine
-	go func() {
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				for _, q := range queues {
-					_ = w.storage.PollScheduled(ctx, q)
-				}
-			}
-		}
-	}()
 
 	for {
 		select {
@@ -294,7 +264,7 @@ func (w *WorkerPool) checkLimitsAndPostpone(ctx context.Context, env *JobEnvelop
 func (w *WorkerPool) executeJob(ctx context.Context, env *JobEnvelope) {
 	job, ok := w.registry[env.Name]
 	if !ok {
-		_ = w.storage.Fail(ctx, env.JobID, errors.New("job type not registered"))
+		_ = w.storage.Fail(ctx, env.JobID, fmt.Errorf("job type not registered: name=%q", env.Name))
 		return
 	}
 	w.runJobPerform(ctx, env, job)
@@ -373,5 +343,33 @@ func (w *WorkerPool) enqueueCronJob(ctx context.Context, cron CronJob, now time.
 	}
 	if err := w.storage.Enqueue(ctx, env); err != nil {
 		w.logger.Error(ctx, "failed to enqueue cron job", err, "cron_name", cron.Name)
+	}
+}
+
+func (w *WorkerPool) startHeartbeat(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = w.storage.HeartbeatProcess(ctx, w.processID)
+		}
+	}
+}
+
+func (w *WorkerPool) startScheduledPoller(ctx context.Context, queues []string) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, q := range queues {
+				_ = w.storage.PollScheduled(ctx, q)
+			}
+		}
 	}
 }

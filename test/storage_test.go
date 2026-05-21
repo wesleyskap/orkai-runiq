@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -10,7 +11,7 @@ import (
 
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
-	"github.com/wesleyskap/orkai-runiq/queue"
+	"github.com/wesleyskap/orkai-runiq/v2/queue"
 )
 
 const (
@@ -129,7 +130,7 @@ func clearPostgresJobsTable(t *testing.T, db *sql.DB) {
 	}
 }
 
-func assertPostgresEnqueueDequeue(t *testing.T, ctx context.Context, s queue.Storage) {
+func assertPostgresEnqueueDequeue(t *testing.T, ctx context.Context, s *queue.PostgresStorage) {
 	env := &queue.JobEnvelope{
 		JobID: "job-postgres-flow-1",
 		Queue: "postgres-test-queue",
@@ -149,7 +150,7 @@ func assertPostgresEnqueueDequeue(t *testing.T, ctx context.Context, s queue.Sto
 	}
 }
 
-func assertPostgresSkipLockedConcurrency(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+func assertPostgresSkipLockedConcurrency(t *testing.T, ctx context.Context, s *queue.PostgresStorage, db *sql.DB) {
 	clearPostgresJobsTable(t, db)
 	for i := 0; i < 5; i++ {
 		_ = s.Enqueue(ctx, &queue.JobEnvelope{
@@ -188,7 +189,7 @@ func assertPostgresSkipLockedConcurrency(t *testing.T, ctx context.Context, s qu
 	}
 }
 
-func assertRedisEnqueueDequeue(t *testing.T, ctx context.Context, s queue.Storage) {
+func assertRedisEnqueueDequeue(t *testing.T, ctx context.Context, s *queue.RedisStorage) {
 	env := &queue.JobEnvelope{
 		JobID: "job-redis-flow-1",
 		Queue: "redis-test-queue",
@@ -233,7 +234,7 @@ func assertRedisEnqueueDequeue(t *testing.T, ctx context.Context, s queue.Storag
 	}
 }
 
-func assertRedisRetryFlow(t *testing.T, ctx context.Context, s queue.Storage, client *redis.Client) {
+func assertRedisRetryFlow(t *testing.T, ctx context.Context, s *queue.RedisStorage, client *redis.Client) {
 	env := &queue.JobEnvelope{
 		JobID:       "job-redis-retry-2",
 		Queue:       "redis-retry-queue",
@@ -330,7 +331,7 @@ func assertRedisRetryFlow(t *testing.T, ctx context.Context, s queue.Storage, cl
 	}
 }
 
-func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s *queue.PostgresStorage, db *sql.DB) {
 	clearPostgresJobsTable(t, db)
 	env := &queue.JobEnvelope{
 		JobID:       "job-postgres-retry-2",
@@ -436,7 +437,7 @@ func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s queue.Storage,
 	}
 }
 
-func assertPostgresAdminActions(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+func assertPostgresAdminActions(t *testing.T, ctx context.Context, s *queue.PostgresStorage, db *sql.DB) {
 	clearPostgresJobsTable(t, db)
 
 	env1 := &queue.JobEnvelope{
@@ -495,7 +496,7 @@ func assertPostgresAdminActions(t *testing.T, ctx context.Context, s queue.Stora
 	}
 }
 
-func assertRedisAdminActions(t *testing.T, ctx context.Context, s queue.Storage, client *redis.Client) {
+func assertRedisAdminActions(t *testing.T, ctx context.Context, s *queue.RedisStorage, client *redis.Client) {
 	client.FlushAll(ctx)
 
 	env1 := &queue.JobEnvelope{
@@ -561,7 +562,7 @@ func assertRedisAdminActions(t *testing.T, ctx context.Context, s queue.Storage,
 	}
 }
 
-func assertPostgresUniqueJobs(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+func assertPostgresUniqueJobs(t *testing.T, ctx context.Context, s *queue.PostgresStorage, db *sql.DB) {
 	clearPostgresJobsTable(t, db)
 	_, _ = db.Exec("DELETE FROM runiq_unique_locks")
 
@@ -585,7 +586,7 @@ func assertPostgresUniqueJobs(t *testing.T, ctx context.Context, s queue.Storage
 	}
 
 	err := s.Enqueue(ctx, env2)
-	if err != queue.ErrDuplicateJob {
+	if !errors.Is(err, queue.ErrDuplicateJob) {
 		t.Errorf("expected ErrDuplicateJob, got %v", err)
 	}
 
@@ -602,7 +603,7 @@ func assertPostgresUniqueJobs(t *testing.T, ctx context.Context, s queue.Storage
 	}
 }
 
-func assertRedisUniqueJobs(t *testing.T, ctx context.Context, s queue.Storage, client *redis.Client) {
+func assertRedisUniqueJobs(t *testing.T, ctx context.Context, s *queue.RedisStorage, client *redis.Client) {
 	client.FlushAll(ctx)
 
 	env1 := &queue.JobEnvelope{
@@ -625,7 +626,7 @@ func assertRedisUniqueJobs(t *testing.T, ctx context.Context, s queue.Storage, c
 	}
 
 	err := s.Enqueue(ctx, env2)
-	if err != queue.ErrDuplicateJob {
+	if !errors.Is(err, queue.ErrDuplicateJob) {
 		t.Errorf("expected ErrDuplicateJob, got %v", err)
 	}
 
@@ -642,7 +643,7 @@ func assertRedisUniqueJobs(t *testing.T, ctx context.Context, s queue.Storage, c
 	}
 }
 
-func assertPostgresActiveProcesses(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+func assertPostgresActiveProcesses(t *testing.T, ctx context.Context, s *queue.PostgresStorage, db *sql.DB) {
 	_, _ = db.ExecContext(ctx, "DELETE FROM runiq_processes")
 
 	proc := &queue.ProcessInfo{
@@ -677,7 +678,7 @@ func assertPostgresActiveProcesses(t *testing.T, ctx context.Context, s queue.St
 	}
 }
 
-func assertRedisActiveProcesses(t *testing.T, ctx context.Context, s queue.Storage, client *redis.Client) {
+func assertRedisActiveProcesses(t *testing.T, ctx context.Context, s *queue.RedisStorage, client *redis.Client) {
 	client.Del(ctx, "runiq:processes", "runiq:processes:heartbeat")
 
 	proc := &queue.ProcessInfo{
@@ -712,7 +713,7 @@ func assertRedisActiveProcesses(t *testing.T, ctx context.Context, s queue.Stora
 	}
 }
 
-func assertPostgresThrottling(t *testing.T, ctx context.Context, s queue.Storage, db *sql.DB) {
+func assertPostgresThrottling(t *testing.T, ctx context.Context, s *queue.PostgresStorage, db *sql.DB) {
 	clearPostgresJobsTable(t, db)
 	_, _ = db.Exec("DELETE FROM runiq_rate_limits")
 
@@ -781,7 +782,7 @@ func assertPostgresThrottling(t *testing.T, ctx context.Context, s queue.Storage
 	}
 }
 
-func assertRedisThrottling(t *testing.T, ctx context.Context, s queue.Storage, client *redis.Client) {
+func assertRedisThrottling(t *testing.T, ctx context.Context, s *queue.RedisStorage, client *redis.Client) {
 	client.FlushAll(ctx)
 
 	// 1. Test GetRunningJobsCount

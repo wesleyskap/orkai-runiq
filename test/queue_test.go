@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wesleyskap/orkai-runiq/queue"
+	"github.com/wesleyskap/orkai-runiq/v2/queue"
 )
 
-// FakeStorage implements queue.Storage interface for testing purposes.
+// FakeStorage implements queue.WorkerPoolStorage and queue.ClientStorage for testing purposes.
 type FakeStorage struct {
 	Enqueued             []*queue.JobEnvelope
 	Acked                []string

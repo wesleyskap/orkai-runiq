@@ -63,10 +63,10 @@ import (
 
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
-	"github.com/wesleyskap/orkai-runiq/queue"
+	"github.com/wesleyskap/orkai-runiq/v2/queue"
 )
 
-func usePostgres(db *sql.DB) queue.Storage {
+func usePostgres(db *sql.DB) *queue.PostgresStorage {
 	storage, err := queue.NewPostgresStorage(db)
 	if err != nil {
 		log.Fatalf("failed to init postgres: %v", err)
@@ -74,7 +74,7 @@ func usePostgres(db *sql.DB) queue.Storage {
 	return storage
 }
 
-func useRedis(client *redis.Client) queue.Storage {
+func useRedis(client *redis.Client) *queue.RedisStorage {
 	storage, err := queue.NewRedisStorage(client)
 	if err != nil {
 		log.Fatalf("failed to init redis: %v", err)
@@ -94,7 +94,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/wesleyskap/orkai-runiq/queue"
+	"github.com/wesleyskap/orkai-runiq/v2/queue"
 )
 
 // 1. Define a job implementing queue.Job

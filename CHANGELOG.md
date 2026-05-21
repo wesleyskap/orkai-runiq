@@ -2,11 +2,28 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.0.0] - 2026-05-20
+
+### Changed
+- **Breaking — Storage interface removed**: Monolithic `Storage` (19 methods) replaced by three exported consumer-specific interfaces — `WorkerPoolStorage`, `ClientStorage`, `ServerStorage` — each composed of only the sub-interfaces the consumer actually uses.
+- **Breaking — Constructor signatures**: `NewWorkerPool` now accepts `WorkerPoolStorage`, `NewClient` accepts `ClientStorage`, and `NewServer` accepts `ServerStorage`. Existing callers passing the old `Storage` must switch to a narrower interface or concrete storage type.
+- **Decomposed large files**: `postgres.go` (722→191 lines) and `redis.go` (789→123 lines) split into admin, process, and batch modules. All files now under 500 lines.
+- **Extracted shared helpers**: `computeBackoffDelay()` and `generateJobID()` moved to `helpers.go`; `acquireUniqueLock()` eliminates duplicated unique-key lock logic across `Enqueue`/`EnqueueInBatch` in both backends; `handleBatchAck()` and `deleteUniqueLock()` reduce nesting in `Ack`/`Fail`/`Cancel`.
+- **Decomposed `WorkerPool.Start`**: Extracted `startHeartbeat()` and `startScheduledPoller()` named methods.
+- **Reordered `JobEnvelope` fields**: Largest to smallest to minimize struct padding.
+- **Error messages now include offending values**: `ErrDuplicateJob` wraps lock key and existing job ID; `"job type not registered"` includes job name; process registration log includes process ID.
+
+### Added
+- **Unit tests for `computeBackoffDelay`**: Cap at 1h, exponential growth, non-negative invariant.
+
+### Fixed
+- **Unique-job assertions**: Updated to `errors.Is` for wrapped `ErrDuplicateJob` checks.
+
 ## [1.2.0] - 2026-05-20
 
 ### Added
 - **Workflow Orchestration (Job Batches)**: Added support for grouping background tasks inside a dynamic execution group (`Batch`) that triggers a final callback job envelope upon successful completion of all constituent tasks.
-- **Client Batch API**: Created `NewBatch` initiator, `Enqueue` batch task scheduler, and `Submit` sealer ensuring race-condition immunity.
+- **Client Batch API**: Created `NewBatch` initiator, `Enqueue` batch task scheduler, and `Submit` sealer   ensuring race-condition immunity.
 - **PostgreSQL Storage Batches**: Created the `runiq_batches` table, added a `batch_id` column to `runiq_jobs`, implemented counting/state updates in `Ack`, and handled fail-fast transitions to `'failed'` in `Fail`.
 - **Redis Storage Batches**: Integrated atomic count tracking and state transitions using hashes (`runiq:batch:{batchID}`) and pipeline transaction updates.
 - **Batch Test Coverage**: Added comprehensive integration and isolation tests verifying enqueuing, submission, execution, and DLQ failure behaviors.

@@ -35,7 +35,7 @@ func TestMatchCron(t *testing.T) {
 }
 
 type mockCronStorage struct {
-	Storage
+	WorkerPoolStorage
 	enqueued []*JobEnvelope
 	lockRes  bool
 	lockErr  error

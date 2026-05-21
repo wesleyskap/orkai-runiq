@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wesleyskap/orkai-runiq/queue"
+	"github.com/wesleyskap/orkai-runiq/v2/queue"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace"

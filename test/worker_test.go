@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wesleyskap/orkai-runiq/queue"
+	"github.com/wesleyskap/orkai-runiq/v2/queue"
 )
 
 type mockTracer struct {

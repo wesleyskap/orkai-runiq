@@ -16,6 +16,7 @@ type TraceContext struct {
 }
 
 // JobEnvelope represents the raw job payload wrapper stored in PostgreSQL/Redis.
+// Fields ordered largest to smallest to minimize struct padding.
 type JobEnvelope struct {
 	TraceContext TraceContext  `json:"trace_context"`
 	Args         []byte        `json:"args"`
@@ -23,11 +24,11 @@ type JobEnvelope struct {
 	Queue        string        `json:"queue"`
 	Name         string        `json:"name"`
 	UniqueKey    string        `json:"unique_key,omitempty"`
+	BatchID      string        `json:"batch_id,omitempty"`
 	RunAt        *time.Time    `json:"run_at,omitempty"`
 	UniqueTTL    time.Duration `json:"unique_ttl,omitempty"`
 	Attempts     int           `json:"attempts"`
 	MaxAttempts  int           `json:"max_attempts"`
-	BatchID      string        `json:"batch_id,omitempty"`
 }
 
 // JobDetail represents the serialized metadata for listing jobs in the dashboard.
@@ -69,8 +70,8 @@ type Stats struct {
 	Processed int64         `json:"processed"`
 }
 
-// Storage defines the persistence engine interface for enqueuing and processing tasks.
-type Storage interface {
+// JobQueue defines the core job lifecycle operations.
+type JobQueue interface {
 	// Enqueue persists a job envelope into the designated storage backend.
 	// Usage example:
 	//	err := storage.Enqueue(ctx, envelope)
@@ -90,17 +91,29 @@ type Storage interface {
 	// Usage example:
 	//	err := storage.Fail(ctx, "job-123", err)
 	Fail(ctx context.Context, jobID string, err error) error
+}
 
-	// GetStats retrieves the current statistics of jobs in storage.
-	// Usage example:
-	//	stats, err := storage.GetStats(ctx)
-	GetStats(ctx context.Context) (*Stats, error)
-
+// ScheduledJobQueue defines operations for scheduled and postponed jobs.
+type ScheduledJobQueue interface {
 	// PollScheduled moves scheduled jobs that are due into the active queue list.
 	// Usage example:
 	//	err := storage.PollScheduled(ctx, "default")
 	PollScheduled(ctx context.Context, queue string) error
 
+	// PostponeJob postpones a job to be executed in the future without failing it.
+	PostponeJob(ctx context.Context, jobID string, queueName string, delay time.Duration) error
+}
+
+// JobStats defines statistics retrieval.
+type JobStats interface {
+	// GetStats retrieves the current statistics of jobs in storage.
+	// Usage example:
+	//	stats, err := storage.GetStats(ctx)
+	GetStats(ctx context.Context) (*Stats, error)
+}
+
+// JobAdmin defines administrative operations on jobs.
+type JobAdmin interface {
 	// Retry resets a failed job back to pending state for re-execution.
 	// Usage example:
 	//	err := storage.Retry(ctx, "job-123")
@@ -115,7 +128,10 @@ type Storage interface {
 	// Usage example:
 	//	err := storage.ClearQueue(ctx, "default")
 	ClearQueue(ctx context.Context, queue string) error
+}
 
+// ProcessRegistry defines worker process lifecycle operations.
+type ProcessRegistry interface {
 	// RegisterProcess registers a worker process with its monitored queues and concurrency limit.
 	RegisterProcess(ctx context.Context, info *ProcessInfo) error
 
@@ -124,19 +140,25 @@ type Storage interface {
 
 	// GetActiveProcesses returns all active worker processes that have recently reported heartbeats.
 	GetActiveProcesses(ctx context.Context) ([]ProcessInfo, error)
- 
+}
+
+// CronLocker defines distributed cron execution locking.
+type CronLocker interface {
 	// LockCronExecution attempts to acquire a unique execution lock for a cron job at a specific minute.
 	LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error)
+}
 
+// JobThrottler defines concurrency and rate limiting checks.
+type JobThrottler interface {
 	// GetRunningJobsCount returns the number of currently running jobs with the specified name.
 	GetRunningJobsCount(ctx context.Context, jobName string) (int, error)
 
 	// CheckRateLimit checks and increments/updates the rate limit window for a job name.
 	CheckRateLimit(ctx context.Context, jobName string, limit int, period time.Duration) (bool, error)
+}
 
-	// PostponeJob postpones a job to be executed in the future without failing it.
-	PostponeJob(ctx context.Context, jobID string, queueName string, delay time.Duration) error
-
+// BatchStorage defines batch/workflow operations.
+type BatchStorage interface {
 	// CreateBatch registers a new batch record with open status and callback details.
 	CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope) error
 
@@ -145,6 +167,27 @@ type Storage interface {
 
 	// SubmitBatch seals the batch enqueuing phase and triggers callback if all jobs have already completed.
 	SubmitBatch(ctx context.Context, batchID string) error
+}
+
+// WorkerPoolStorage is the storage interface required by WorkerPool.
+type WorkerPoolStorage interface {
+	JobQueue
+	ScheduledJobQueue
+	ProcessRegistry
+	CronLocker
+	JobThrottler
+}
+
+// ClientStorage is the storage interface required by Client.
+type ClientStorage interface {
+	JobQueue
+	BatchStorage
+}
+
+// ServerStorage is the storage interface required by Server.
+type ServerStorage interface {
+	JobStats
+	JobAdmin
 }
 
 // CronJob represents a scheduled recurring task definition.

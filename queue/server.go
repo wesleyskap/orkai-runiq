@@ -13,7 +13,7 @@ var assetsFS embed.FS
 
 // Server serves the dashboard UI and API.
 type Server struct {
-	storage    Storage
+	storage    ServerStorage
 	port       string
 	httpServer *http.Server
 }
@@ -21,7 +21,7 @@ type Server struct {
 // NewServer instantiates a new Dashboard Server.
 // Usage example:
 //	server := queue.NewServer(storage, ":8080")
-func NewServer(storage Storage, port string) *Server {
+func NewServer(storage ServerStorage, port string) *Server {
 	s := &Server{
 		storage: storage,
 		port:    port,

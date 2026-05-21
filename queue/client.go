@@ -2,21 +2,19 @@ package queue
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"time"
 )
 
 // Client enqueues background jobs.
 type Client struct {
-	storage Storage
+	storage ClientStorage
 	tracer  Tracer
 }
 
 // NewClient creates a new Client instance.
 // Usage example:
 //	client := queue.NewClient(storage, queue.WithClientTracer(tracer))
-func NewClient(storage Storage, opts ...ClientOption) *Client {
+func NewClient(storage ClientStorage, opts ...ClientOption) *Client {
 	c := &Client{
 		storage: storage,
 		tracer:  &defaultTracer{},
@@ -97,8 +95,4 @@ func (c *Client) EnqueueUnique(ctx context.Context, queueName, name string, args
 	return c.storage.Enqueue(ctx, env)
 }
 
-func generateJobID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
+
