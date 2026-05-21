@@ -405,3 +405,17 @@ func (p *PostgresStorage) PurgeAllFailed(ctx context.Context) error {
 	_, err := p.db.ExecContext(ctx, query)
 	return err
 }
+
+// Ping checks PostgreSQL connection health.
+func (p *PostgresStorage) Ping(ctx context.Context) error {
+	return p.db.PingContext(ctx)
+}
+
+// PurgeExpiredDLQ deletes dead jobs older than the given TTL.
+func (p *PostgresStorage) PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error {
+	cutoff := time.Now().Add(-ttl)
+	query := "DELETE FROM runiq_jobs WHERE status = 'dead' AND updated_at < $1"
+	_, err := p.db.ExecContext(ctx, query, cutoff)
+	return err
+}
+

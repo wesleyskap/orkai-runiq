@@ -191,6 +191,11 @@ type BatchStorage interface {
 	SubmitBatch(ctx context.Context, batchID string) error
 }
 
+// Pinger defines the health check operation.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
 // WorkerPoolStorage is the storage interface required by WorkerPool.
 type WorkerPoolStorage interface {
 	JobQueue
@@ -198,20 +203,24 @@ type WorkerPoolStorage interface {
 	ProcessRegistry
 	CronLocker
 	JobThrottler
+	Pinger
 	IsQueuePaused(ctx context.Context, queue string) (bool, error)
 	RegisterCronJobs(ctx context.Context, crons []CronJob) error
+	PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error
 }
 
 // ClientStorage is the storage interface required by Client.
 type ClientStorage interface {
 	JobQueue
 	BatchStorage
+	Pinger
 }
 
 // ServerStorage is the storage interface required by Server.
 type ServerStorage interface {
 	JobStats
 	JobAdmin
+	Pinger
 	GetJobDetail(ctx context.Context, jobID string) (*JobEnvelope, error)
 }
 
@@ -222,6 +231,29 @@ type CronJob struct {
 	Name    string `json:"name"`
 	Queue   string `json:"queue"`
 }
+
+// JobHandler defines the function signature for executing a job through middlewares.
+type JobHandler func(ctx context.Context, env *JobEnvelope) error
+
+// EventType represents the type of a background job event.
+type EventType string
+
+const (
+	EventJobEnqueued  EventType = "JobEnqueued"
+	EventJobCompleted EventType = "JobCompleted"
+	EventJobFailed    EventType = "JobFailed"
+	EventJobDead      EventType = "JobDead"
+)
+
+// Event contains metadata for background job lifecycles.
+type Event struct {
+	Type EventType
+	Job  *JobEnvelope
+	Err  error
+}
+
+// EventHandler is a callback function for listening to job events.
+type EventHandler func(event Event)
 
 // Job defines the contract that every background task must implement.
 type Job interface {

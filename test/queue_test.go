@@ -182,6 +182,15 @@ func (f *FakeStorage) RegisterCronJobs(ctx context.Context, crons []queue.CronJo
 	return nil
 }
 
+func (f *FakeStorage) Ping(ctx context.Context) error {
+	return nil
+}
+
+func (f *FakeStorage) PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error {
+	return nil
+}
+
+
 
 
 // DummyJob implements queue.Job for verification.

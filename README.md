@@ -2,7 +2,7 @@
 
 Orkai Runiq is a background job processor in Go. It is designed to be standalone with zero hard dependencies, while offering optional, interface-driven integration with telemetry and logging engines such as orkai-observability.
 
-![Orkai Runiq Dashboard](queue/assets/orkai-runiq-dashboard.png)
+![Orkai Runiq Dashboard](queue/assets/orkai-runiq-dashboard-2.4.0.png)
 
 ## Project Structure
 
