@@ -11,16 +11,28 @@ import (
 )
 
 func (r *RedisStorage) handleBatchAck(ctx context.Context, batchID string) {
+	expired, err := r.checkBatchExpired(ctx, batchID)
+	if err != nil || expired {
+		return
+	}
 	batchKey := "runiq:batch:" + batchID
 	pending, err := r.client.HIncrBy(ctx, batchKey, "pending", -1).Result()
 	if err != nil {
 		return
 	}
+	r.completeBatchIfSealedAndDone(ctx, batchKey, pending)
+}
+
+func (r *RedisStorage) completeBatchIfSealedAndDone(ctx context.Context, batchKey string, pending int64) {
 	status, err := r.client.HGet(ctx, batchKey, "status").Result()
 	if err != nil || status != "sealed" || pending != 0 {
 		return
 	}
 	_ = r.client.HSet(ctx, batchKey, "status", "completed").Err()
+	r.enqueueBatchCallback(ctx, batchKey)
+}
+
+func (r *RedisStorage) enqueueBatchCallback(ctx context.Context, batchKey string) {
 	callbackJSON, err := r.client.HGet(ctx, batchKey, "callback").Result()
 	if err != nil || callbackJSON == "" {
 		return
@@ -138,6 +150,7 @@ func (r *RedisStorage) handleDeadJob(ctx context.Context, pipe redis.Pipeliner, 
 	}
 	if env.BatchID != "" {
 		pipe.HSet(ctx, "runiq:batch:"+env.BatchID, "status", "failed")
+		pipe.ZRem(ctx, "runiq:batches:expire", env.BatchID)
 	}
 }
 
@@ -391,6 +404,9 @@ func (r *RedisStorage) GetJobDetail(ctx context.Context, jobID string) (*JobEnve
 	return &env, nil
 }
 
+// RegisterCronJobs saves the cron job settings to Redis.
+// Usage example:
+//	err := storage.RegisterCronJobs(ctx, crons)
 func (r *RedisStorage) RegisterCronJobs(ctx context.Context, crons []CronJob) error {
 	pipe := r.client.Pipeline()
 	for _, c := range crons {
@@ -399,12 +415,38 @@ func (r *RedisStorage) RegisterCronJobs(ctx context.Context, crons []CronJob) er
 			Expression: c.Spec,
 			Queue:      c.Queue,
 			Payload:    string(c.Payload),
+			Timezone:   c.Timezone,
 		}
 		data, err := json.Marshal(&detail)
 		if err != nil {
 			return err
 		}
 		pipe.HSet(ctx, "runiq:cron_jobs", c.Name, data)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// FailExpiredBatches transitions expired batches to failed status.
+// Usage example:
+//	err := storage.FailExpiredBatches(ctx)
+func (r *RedisStorage) FailExpiredBatches(ctx context.Context) error {
+	now := time.Now().Unix()
+	expired, err := r.client.ZRangeByScore(ctx, "runiq:batches:expire", &redis.ZRangeBy{
+		Min: "-inf",
+		Max: fmt.Sprintf("%d", now),
+	}).Result()
+	if err != nil || len(expired) == 0 {
+		return err
+	}
+	return r.failExpiredBatchesTx(ctx, expired)
+}
+
+func (r *RedisStorage) failExpiredBatchesTx(ctx context.Context, expired []string) error {
+	pipe := r.client.Pipeline()
+	for _, batchID := range expired {
+		pipe.HSet(ctx, "runiq:batch:"+batchID, "status", "failed")
+		pipe.ZRem(ctx, "runiq:batches:expire", batchID)
 	}
 	_, err := pipe.Exec(ctx)
 	return err

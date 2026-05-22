@@ -67,6 +67,7 @@ type CronJobDetail struct {
 	Expression string `json:"expression"`
 	Queue      string `json:"queue"`
 	Payload    string `json:"payload"`
+	Timezone   string `json:"timezone,omitempty"`
 }
 
 // Stats holds aggregate and queue-specific job counts.
@@ -183,7 +184,7 @@ type JobThrottler interface {
 // BatchStorage defines batch/workflow operations.
 type BatchStorage interface {
 	// CreateBatch registers a new batch record with open status and callback details.
-	CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope) error
+	CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope, expiresAt *time.Time) error
 
 	// EnqueueInBatch associates a job envelope with a batch and enqueues it, incrementing batch job counts.
 	EnqueueInBatch(ctx context.Context, batchID string, env *JobEnvelope) error
@@ -214,6 +215,7 @@ type WorkerPoolStorage interface {
 	IsQueuePaused(ctx context.Context, queue string) (bool, error)
 	RegisterCronJobs(ctx context.Context, crons []CronJob) error
 	PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error
+	FailExpiredBatches(ctx context.Context) error
 }
 
 // ClientStorage is the storage interface required by Client.
@@ -238,10 +240,12 @@ type ServerStorage interface {
 
 // CronJob represents a scheduled recurring task definition.
 type CronJob struct {
-	Payload []byte `json:"payload"`
-	Spec    string `json:"spec"`
-	Name    string `json:"name"`
-	Queue   string `json:"queue"`
+	Payload  []byte         `json:"payload"`
+	Spec     string         `json:"spec"`
+	Name     string         `json:"name"`
+	Queue    string         `json:"queue"`
+	Timezone string         `json:"timezone,omitempty"`
+	Location *time.Location `json:"-"`
 }
 
 // JobHandler defines the function signature for executing a job through middlewares.

@@ -97,3 +97,18 @@ func matchSingle(spec string, val int) bool {
 	}
 	return val == target
 }
+
+type cronOptions struct {
+	location *time.Location
+}
+
+// CronOption configures custom parameters for recurring tasks.
+type CronOption func(*cronOptions)
+
+// WithCronLocation sets the target location/timezone for evaluating cron expressions.
+func WithCronLocation(loc *time.Location) CronOption {
+	return func(o *cronOptions) {
+		o.location = loc
+	}
+}
+

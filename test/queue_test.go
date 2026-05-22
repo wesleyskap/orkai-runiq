@@ -119,7 +119,7 @@ func (f *FakeStorage) PostponeJob(ctx context.Context, jobID string, queueName s
 	return nil
 }
 
-func (f *FakeStorage) CreateBatch(ctx context.Context, batchID string, callback *queue.JobEnvelope) error {
+func (f *FakeStorage) CreateBatch(ctx context.Context, batchID string, callback *queue.JobEnvelope, expiresAt *time.Time) error {
 	return nil
 }
 
@@ -192,6 +192,10 @@ func (f *FakeStorage) Ping(ctx context.Context) error {
 }
 
 func (f *FakeStorage) PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error {
+	return nil
+}
+
+func (f *FakeStorage) FailExpiredBatches(ctx context.Context) error {
 	return nil
 }
 

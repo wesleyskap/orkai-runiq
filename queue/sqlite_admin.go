@@ -28,20 +28,21 @@ func (s *SqliteStorage) handleBatchAck(ctx context.Context, tx *sql.Tx, batchID 
 
 func (s *SqliteStorage) updateBatchPending(ctx context.Context, tx *sql.Tx, batchID string) (int, string, string, string, []byte, error) {
 	var pendingJobs int
-	var status, callbackQueue, callbackName string
-	var callbackArgs []byte
+	var status, cq, cn string
+	var ca []byte
+	var exp *time.Time
 	err := tx.QueryRowContext(ctx, `
-		UPDATE runiq_batches
-		SET pending_jobs = pending_jobs - 1
-		WHERE batch_id = ?
-		RETURNING pending_jobs, status, callback_queue, callback_name, callback_args`,
+		UPDATE runiq_batches SET pending_jobs = pending_jobs - 1 WHERE batch_id = ?
+		RETURNING pending_jobs, status, callback_queue, callback_name, callback_args, expires_at`,
 		batchID,
-	).Scan(&pendingJobs, &status, &callbackQueue, &callbackName, &callbackArgs)
-	if err == sql.ErrNoRows {
-		return 0, "", "", "", nil, nil
+	).Scan(&pendingJobs, &status, &cq, &cn, &ca, &exp)
+	if err == nil && exp != nil && time.Now().After(*exp) {
+		_, _ = tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'failed' WHERE batch_id = ?", batchID)
+		status = "failed"
 	}
-	return pendingJobs, status, callbackQueue, callbackName, callbackArgs, err
+	return pendingJobs, status, cq, cn, ca, err
 }
+
 
 func (s *SqliteStorage) markBatchCompleted(ctx context.Context, tx *sql.Tx, batchID string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE runiq_batches SET status = 'completed' WHERE batch_id = ?`, batchID)
@@ -333,19 +334,31 @@ func (s *SqliteStorage) accumulateStats(stats *Stats, queueMap map[string]*Queue
 }
 
 func (s *SqliteStorage) fetchCronJobs(ctx context.Context, stats *Stats) error {
-	rows, err := s.db.QueryContext(ctx, "SELECT name, expression, queue, payload FROM runiq_cron_jobs ORDER BY name ASC")
+	rows, err := s.db.QueryContext(ctx, "SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs ORDER BY name ASC")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var cd CronJobDetail
-		if err := rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload); err == nil {
+		if err := rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload, &cd.Timezone); err == nil {
 			stats.CronJobs = append(stats.CronJobs, cd)
 		}
 	}
 	return nil
 }
+
+func (s *SqliteStorage) FailExpiredBatches(ctx context.Context) error {
+	query := `
+		UPDATE runiq_batches
+		SET status = 'failed'
+		WHERE status IN ('open', 'sealed')
+		  AND expires_at IS NOT NULL
+		  AND expires_at < ?`
+	_, err := s.db.ExecContext(ctx, query, time.Now().UTC())
+	return err
+}
+
 
 func (s *SqliteStorage) RegisterCronJobs(ctx context.Context, crons []CronJob) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -353,21 +366,30 @@ func (s *SqliteStorage) RegisterCronJobs(ctx context.Context, crons []CronJob) e
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.insertCronJobsTx(ctx, tx, crons); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SqliteStorage) insertCronJobsTx(ctx context.Context, tx *sql.Tx, crons []CronJob) error {
 	query := `
-		INSERT INTO runiq_cron_jobs (name, expression, queue, payload, updated_at)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO runiq_cron_jobs (name, expression, queue, payload, timezone, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT (name) DO UPDATE SET
 			expression = excluded.expression,
 			queue = excluded.queue,
 			payload = excluded.payload,
+			timezone = excluded.timezone,
 			updated_at = CURRENT_TIMESTAMP`
 	for _, c := range crons {
-		if _, err := tx.ExecContext(ctx, query, c.Name, c.Spec, c.Queue, string(c.Payload)); err != nil {
+		if _, err := tx.ExecContext(ctx, query, c.Name, c.Spec, c.Queue, string(c.Payload), c.Timezone); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
+
 
 func (s *SqliteStorage) GetJobDetail(ctx context.Context, jobID string) (*JobEnvelope, error) {
 	var env JobEnvelope

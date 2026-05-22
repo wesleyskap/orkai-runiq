@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-func (s *SqliteStorage) CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope) error {
+func (s *SqliteStorage) CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope, expiresAt *time.Time) error {
 	query := `
-		INSERT INTO runiq_batches (batch_id, callback_queue, callback_name, callback_args, total_jobs, pending_jobs, status)
-		VALUES (?, ?, ?, ?, 0, 0, 'open')`
-	_, err := s.db.ExecContext(ctx, query, batchID, callback.Queue, callback.Name, callback.Args)
+		INSERT INTO runiq_batches (batch_id, callback_queue, callback_name, callback_args, total_jobs, pending_jobs, status, expires_at)
+		VALUES (?, ?, ?, ?, 0, 0, 'open', ?)`
+	_, err := s.db.ExecContext(ctx, query, batchID, callback.Queue, callback.Name, callback.Args, expiresAt)
 	return err
 }
 
@@ -64,6 +64,13 @@ func (s *SqliteStorage) SubmitBatch(ctx context.Context, batchID string) error {
 		return err
 	}
 	defer tx.Rollback()
+	expired, err := s.checkBatchExpired(ctx, tx, batchID)
+	if err != nil {
+		return err
+	}
+	if expired {
+		return tx.Commit()
+	}
 	pending, cq, cn, ca, err := s.sealBatch(ctx, tx, batchID)
 	if err != nil {
 		return err
@@ -75,6 +82,23 @@ func (s *SqliteStorage) SubmitBatch(ctx context.Context, batchID string) error {
 	}
 	return tx.Commit()
 }
+
+func (s *SqliteStorage) checkBatchExpired(ctx context.Context, tx *sql.Tx, batchID string) (bool, error) {
+	var expiresAt *time.Time
+	err := tx.QueryRowContext(ctx, "SELECT expires_at FROM runiq_batches WHERE batch_id = ?", batchID).Scan(&expiresAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	if expiresAt != nil && time.Now().After(*expiresAt) {
+		_, err = tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'failed' WHERE batch_id = ?", batchID)
+		return true, err
+	}
+	return false, nil
+}
+
 
 func (s *SqliteStorage) sealBatch(ctx context.Context, tx *sql.Tx, batchID string) (int, string, string, []byte, error) {
 	var pendingJobs int

@@ -196,6 +196,7 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		total_jobs INT NOT NULL DEFAULT 0,
 		pending_jobs INT NOT NULL DEFAULT 0,
 		status VARCHAR(50) NOT NULL DEFAULT 'open',
+		expires_at TIMESTAMP WITH TIME ZONE,
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -208,6 +209,7 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		expression VARCHAR(255) NOT NULL,
 		queue VARCHAR(255) NOT NULL,
 		payload TEXT NOT NULL,
+		timezone VARCHAR(50) DEFAULT 'UTC',
 		updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -219,7 +221,17 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 	);
 	`
 	_, err := db.ExecContext(ctx, schema)
-	return err
+	if err != nil {
+		return err
+	}
+	runPostgresMigrations(ctx, db)
+	return nil
 }
+
+func runPostgresMigrations(ctx context.Context, db *sql.DB) {
+	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_batches ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_cron_jobs ADD COLUMN IF NOT EXISTS timezone VARCHAR(50) DEFAULT 'UTC'")
+}
+
 
 

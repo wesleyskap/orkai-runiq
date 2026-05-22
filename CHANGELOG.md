@@ -2,6 +2,13 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.8.0] - 2026-05-22
+
+### Added
+- **Native Delay Queue (`EnqueueWithDelay`)**: Added a convenient client helper to schedule jobs with a relative duration delay.
+- **Batch Timeout (`WithBatchTimeout`)**: Support setting a maximum execution duration/timeout for a job batch (`BatchOption`), automatically failing expired batches.
+- **Cron with Timezone (`WithCronLocation`)**: Added timezone/location support for recurring tasks (`CronOption`), allowing cron expressions to be evaluated under specific locales.
+
 ## [2.7.0] - 2026-05-22
 
 ### Added
@@ -9,6 +16,8 @@ All notable changes to the orkai-runiq project will be documented in this file.
 - **Backend Storage Implementations**: Added transactional dependency tables and resolution logic on SQLite (`runiq_job_dependencies`), PostgreSQL (`runiq_job_dependencies`), and Redis (using dependency/dependent tracking sets).
 - **Downstream Cascading Lifecycle**: Automatically cascades failures and cancellations downstream to block or cancel child jobs recursively if a parent task transitions to `dead` or is cancelled.
 - **Workflow Verification Suite**: Integrated robust integration tests covering sequential execution, complex DAGs, cascading failure, and cascading cancellation.
+
+
 
 ## [2.6.0] - 2026-05-22
 

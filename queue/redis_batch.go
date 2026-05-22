@@ -9,7 +9,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func (r *RedisStorage) CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope) error {
+// CreateBatch registers a new batch record with open status and callback details.
+// Usage example:
+//	err := storage.CreateBatch(ctx, "batch-123", callback, expiresAt)
+func (r *RedisStorage) CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope, expiresAt *time.Time) error {
 	callbackJSON, err := json.Marshal(callback)
 	if err != nil {
 		return err
@@ -20,81 +23,138 @@ func (r *RedisStorage) CreateBatch(ctx context.Context, batchID string, callback
 	pipe.HSet(ctx, batchKey, "total", 0)
 	pipe.HSet(ctx, batchKey, "pending", 0)
 	pipe.HSet(ctx, batchKey, "callback", callbackJSON)
+	if expiresAt != nil {
+		pipe.HSet(ctx, batchKey, "expires_at", expiresAt.Format(time.RFC3339))
+		pipe.ZAdd(ctx, "runiq:batches:expire", redis.Z{
+			Score:  float64(expiresAt.Unix()),
+			Member: batchID,
+		})
+	}
 	_, err = pipe.Exec(ctx)
 	return err
 }
 
+// EnqueueInBatch associates a job envelope with a batch and enqueues it, incrementing batch job counts.
+// Usage example:
+//	err := storage.EnqueueInBatch(ctx, "batch-123", env)
 func (r *RedisStorage) EnqueueInBatch(ctx context.Context, batchID string, env *JobEnvelope) error {
 	env.BatchID = batchID
-	maxAttempts := env.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 3
+	if env.MaxAttempts <= 0 {
+		env.MaxAttempts = 3
 	}
-	env.MaxAttempts = maxAttempts
+	if err := r.incrementBatchCounts(ctx, batchID); err != nil {
+		return err
+	}
+	if err := r.acquireUniqueLock(ctx, env); err != nil {
+		return err
+	}
+	return r.enqueueBatchJob(ctx, env)
+}
 
+func (r *RedisStorage) incrementBatchCounts(ctx context.Context, batchID string) error {
 	batchKey := "runiq:batch:" + batchID
 	pipe := r.client.Pipeline()
 	pipe.HIncrBy(ctx, batchKey, "total", 1)
 	pipe.HIncrBy(ctx, batchKey, "pending", 1)
 	_, err := pipe.Exec(ctx)
-	if err != nil {
-		return err
-	}
+	return err
+}
 
-	if err := r.acquireUniqueLock(ctx, env); err != nil {
-		return err
-	}
-
+func (r *RedisStorage) enqueueBatchJob(ctx context.Context, env *JobEnvelope) error {
 	data, err := json.Marshal(env)
 	if err != nil {
 		return err
 	}
-	enqueuePipe := r.client.Pipeline()
-	enqueuePipe.HSet(ctx, "runiq:jobs", env.JobID, data)
-	enqueuePipe.SAdd(ctx, "runiq:queues", env.Queue)
-
-	if env.RunAt != nil && env.RunAt.After(time.Now()) {
-		enqueuePipe.ZAdd(ctx, "runiq:scheduled:"+env.Queue, redis.Z{
-			Score:  float64(env.RunAt.Unix()),
-			Member: env.JobID,
-		})
-	} else {
-		enqueuePipe.LPush(ctx, "runiq:queue:"+env.Queue, env.JobID)
-	}
-	_, err = enqueuePipe.Exec(ctx)
+	pipe := r.client.Pipeline()
+	pipe.HSet(ctx, "runiq:jobs", env.JobID, data)
+	pipe.SAdd(ctx, "runiq:queues", env.Queue)
+	r.addJobToQueue(ctx, pipe, env)
+	_, err = pipe.Exec(ctx)
 	return err
 }
 
+func (r *RedisStorage) addJobToQueue(ctx context.Context, pipe redis.Pipeliner, env *JobEnvelope) {
+	if env.RunAt != nil && env.RunAt.After(time.Now()) {
+		pipe.ZAdd(ctx, "runiq:scheduled:"+env.Queue, redis.Z{
+			Score:  float64(env.RunAt.Unix()),
+			Member: env.JobID,
+		})
+		return
+	}
+	pipe.LPush(ctx, "runiq:queue:"+env.Queue, env.JobID)
+}
+
+// SubmitBatch seals the batch enqueuing phase and triggers callback if all jobs have already completed.
+// Usage example:
+//	err := storage.SubmitBatch(ctx, "batch-123")
 func (r *RedisStorage) SubmitBatch(ctx context.Context, batchID string) error {
+	expired, err := r.checkBatchExpired(ctx, batchID)
+	if err != nil || expired {
+		return err
+	}
 	batchKey := "runiq:batch:" + batchID
-	err := r.client.HSet(ctx, batchKey, "status", "sealed").Err()
+	if err := r.client.HSet(ctx, batchKey, "status", "sealed").Err(); err != nil {
+		return err
+	}
+	pending, err := r.getPendingCount(ctx, batchKey)
 	if err != nil {
 		return err
 	}
+	if pending == 0 {
+		return r.completeBatch(ctx, batchKey)
+	}
+	return nil
+}
 
+func (r *RedisStorage) getPendingCount(ctx context.Context, batchKey string) (int, error) {
 	pendingStr, err := r.client.HGet(ctx, batchKey, "pending").Result()
 	if err != nil {
-		return err
+		return 0, err
 	}
-
 	var pending int
 	_, _ = fmt.Sscanf(pendingStr, "%d", &pending)
+	return pending, nil
+}
 
-	if pending == 0 {
-		err = r.client.HSet(ctx, batchKey, "status", "completed").Err()
-		if err != nil {
-			return err
-		}
-
-		callbackJSON, err := r.client.HGet(ctx, batchKey, "callback").Result()
-		if err == nil && callbackJSON != "" {
-			var callbackEnv JobEnvelope
-			if err := json.Unmarshal([]byte(callbackJSON), &callbackEnv); err == nil {
-				callbackEnv.JobID = generateJobID()
-				_ = r.Enqueue(ctx, &callbackEnv)
-			}
-		}
+func (r *RedisStorage) completeBatch(ctx context.Context, batchKey string) error {
+	if err := r.client.HSet(ctx, batchKey, "status", "completed").Err(); err != nil {
+		return err
 	}
+	callbackJSON, err := r.client.HGet(ctx, batchKey, "callback").Result()
+	if err != nil || callbackJSON == "" {
+		return nil
+	}
+	var callbackEnv JobEnvelope
+	if err := json.Unmarshal([]byte(callbackJSON), &callbackEnv); err != nil {
+		return nil
+	}
+	callbackEnv.JobID = generateJobID()
+	return r.Enqueue(ctx, &callbackEnv)
+}
 
-	return nil
+func (r *RedisStorage) checkBatchExpired(ctx context.Context, batchID string) (bool, error) {
+	batchKey := "runiq:batch:" + batchID
+	val, err := r.client.HGet(ctx, batchKey, "expires_at").Result()
+	if err == redis.Nil || val == "" {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	exp, err := time.Parse(time.RFC3339, val)
+	if err != nil {
+		return false, err
+	}
+	if time.Now().After(exp) {
+		return r.failExpiredBatch(ctx, batchKey, batchID)
+	}
+	return false, nil
+}
+
+func (r *RedisStorage) failExpiredBatch(ctx context.Context, key, id string) (bool, error) {
+	pipe := r.client.Pipeline()
+	pipe.HSet(ctx, key, "status", "failed")
+	pipe.ZRem(ctx, "runiq:batches:expire", id)
+	_, err := pipe.Exec(ctx)
+	return true, err
 }

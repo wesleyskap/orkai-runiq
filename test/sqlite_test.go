@@ -394,7 +394,7 @@ func assertSqliteBatches(t *testing.T, ctx context.Context, s *queue.SqliteStora
 	}
 
 	// Create Batch
-	if err := s.CreateBatch(ctx, "batch-1", callback); err != nil {
+	if err := s.CreateBatch(ctx, "batch-1", callback, nil); err != nil {
 		t.Fatalf("failed to create batch: %v", err)
 	}
 

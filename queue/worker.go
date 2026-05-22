@@ -136,12 +136,20 @@ func (w *WorkerPool) Register(name string, job Job, opts ...HandlerOption) {
 }
 
 // RegisterCron registers a recurring task under the specified cron spec.
-func (w *WorkerPool) RegisterCron(spec, queue, name string, payload []byte) {
+func (w *WorkerPool) RegisterCron(spec, queue, name string, payload []byte, opts ...CronOption) {
+	cfg := cronOptions{
+		location: time.UTC,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	w.cronJobs = append(w.cronJobs, CronJob{
-		Payload: payload,
-		Spec:    spec,
-		Name:    name,
-		Queue:   queue,
+		Payload:  payload,
+		Spec:     spec,
+		Name:     name,
+		Queue:    queue,
+		Timezone: cfg.location.String(),
+		Location: cfg.location,
 	})
 }
 
@@ -206,6 +214,7 @@ func (w *WorkerPool) startBackgroundLoops(ctx context.Context, queues []string) 
 	}
 	go w.startScheduledPoller(ctx, queues)
 	go w.startDLQAutopurge(ctx)
+	go w.startBatchTimeoutWatcher(ctx)
 }
 
 func (w *WorkerPool) startDLQAutopurge(ctx context.Context) {
@@ -493,7 +502,11 @@ func (w *WorkerPool) startCronScheduler(ctx context.Context) {
 
 func (w *WorkerPool) processCronJobs(ctx context.Context, now time.Time) {
 	for _, cron := range w.cronJobs {
-		if MatchCron(cron.Spec, now) {
+		locNow := now
+		if cron.Location != nil {
+			locNow = now.In(cron.Location)
+		}
+		if MatchCron(cron.Spec, locNow) {
 			go w.enqueueCronJob(ctx, cron, now)
 		}
 	}
@@ -526,3 +539,18 @@ func (w *WorkerPool) startScheduledPoller(ctx context.Context, queues []string) 
 		}
 	}
 }
+
+func (w *WorkerPool) startBatchTimeoutWatcher(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	_ = w.storage.FailExpiredBatches(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = w.storage.FailExpiredBatches(ctx)
+		}
+	}
+}
+

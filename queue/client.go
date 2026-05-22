@@ -131,4 +131,12 @@ func (c *Client) EnqueueWorkflow(ctx context.Context, jobs ...*JobEnvelope) erro
 	return c.storage.EnqueueWorkflow(ctx, jobs...)
 }
 
+// EnqueueWithDelay schedules a job to be executed after a relative duration delay.
+// Usage example:
+//	err := client.EnqueueWithDelay(ctx, "default", "SendReminder", payload, 30*time.Minute)
+func (c *Client) EnqueueWithDelay(ctx context.Context, queueName, name string, args []byte, delay time.Duration) error {
+	return c.EnqueueIn(ctx, queueName, name, args, delay)
+}
+
+
 

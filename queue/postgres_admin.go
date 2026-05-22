@@ -16,34 +16,44 @@ func (p *PostgresStorage) deleteUniqueLock(ctx context.Context, tx *sql.Tx, queu
 }
 
 func (p *PostgresStorage) handleBatchAck(ctx context.Context, tx *sql.Tx, batchID string) error {
+	pending, status, cq, cn, ca, err := p.updateBatchPending(ctx, tx, batchID)
+	if err != nil || status != "sealed" || pending != 0 {
+		return err
+	}
+	if err := p.markBatchCompleted(ctx, tx, batchID); err != nil {
+		return err
+	}
+	return p.enqueueCallback(ctx, tx, cq, cn, ca)
+}
+
+func (p *PostgresStorage) updateBatchPending(ctx context.Context, tx *sql.Tx, batchID string) (int, string, string, string, []byte, error) {
 	var pendingJobs int
-	var status, callbackQueue, callbackName string
-	var callbackArgs []byte
+	var status, cq, cn string
+	var ca []byte
+	var exp *time.Time
 	err := tx.QueryRowContext(ctx, `
-		UPDATE runiq_batches
-		SET pending_jobs = pending_jobs - 1
-		WHERE batch_id = $1
-		RETURNING pending_jobs, status, callback_queue, callback_name, callback_args`,
+		UPDATE runiq_batches SET pending_jobs = pending_jobs - 1 WHERE batch_id = $1
+		RETURNING pending_jobs, status, callback_queue, callback_name, callback_args, expires_at`,
 		batchID,
-	).Scan(&pendingJobs, &status, &callbackQueue, &callbackName, &callbackArgs)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return err
+	).Scan(&pendingJobs, &status, &cq, &cn, &ca, &exp)
+	if err == nil && exp != nil && time.Now().After(*exp) {
+		_, _ = tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'failed' WHERE batch_id = $1", batchID)
+		status = "failed"
 	}
-	if status != "sealed" || pendingJobs != 0 {
-		return nil
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE runiq_batches SET status = 'completed' WHERE batch_id = $1`, batchID)
-	if err != nil {
-		return err
-	}
+	return pendingJobs, status, cq, cn, ca, err
+}
+
+func (p *PostgresStorage) markBatchCompleted(ctx context.Context, tx *sql.Tx, batchID string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE runiq_batches SET status = 'completed' WHERE batch_id = $1`, batchID)
+	return err
+}
+
+func (p *PostgresStorage) enqueueCallback(ctx context.Context, tx *sql.Tx, queue, name string, args []byte) error {
 	callbackJobID := generateJobID()
 	query := `
 		INSERT INTO runiq_jobs (job_id, queue, name, args, status, attempts, max_attempts, run_at)
 		VALUES ($1, $2, $3, $4, 'pending', 0, 3, CURRENT_TIMESTAMP)`
-	_, err = tx.ExecContext(ctx, query, callbackJobID, callbackQueue, callbackName, callbackArgs)
+	_, err := tx.ExecContext(ctx, query, callbackJobID, queue, name, args)
 	return err
 }
 
@@ -330,40 +340,65 @@ func (p *PostgresStorage) accumulateStats(stats *Stats, queueMap map[string]*Que
 }
 
 func (p *PostgresStorage) fetchCronJobs(ctx context.Context, stats *Stats) error {
-	rows, err := p.db.QueryContext(ctx, "SELECT name, expression, queue, payload FROM runiq_cron_jobs ORDER BY name ASC")
+	rows, err := p.db.QueryContext(ctx, "SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs ORDER BY name ASC")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var cd CronJobDetail
-		if err := rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload); err == nil {
+		if err := rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload, &cd.Timezone); err == nil {
 			stats.CronJobs = append(stats.CronJobs, cd)
 		}
 	}
 	return nil
 }
 
+// FailExpiredBatches transitions expired batches to failed status.
+// Usage example:
+//	err := storage.FailExpiredBatches(ctx)
+func (p *PostgresStorage) FailExpiredBatches(ctx context.Context) error {
+	query := `
+		UPDATE runiq_batches
+		SET status = 'failed'
+		WHERE status IN ('open', 'sealed')
+		  AND expires_at IS NOT NULL
+		  AND expires_at < $1`
+	_, err := p.db.ExecContext(ctx, query, time.Now().UTC())
+	return err
+}
+
+// RegisterCronJobs saves the cron job settings to the database.
+// Usage example:
+//	err := storage.RegisterCronJobs(ctx, crons)
 func (p *PostgresStorage) RegisterCronJobs(ctx context.Context, crons []CronJob) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := p.insertCronJobsTx(ctx, tx, crons); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (p *PostgresStorage) insertCronJobsTx(ctx context.Context, tx *sql.Tx, crons []CronJob) error {
 	query := `
-		INSERT INTO runiq_cron_jobs (name, expression, queue, payload, updated_at)
-		VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+		INSERT INTO runiq_cron_jobs (name, expression, queue, payload, timezone, updated_at)
+		VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
 		ON CONFLICT (name) DO UPDATE SET
 			expression = EXCLUDED.expression,
 			queue = EXCLUDED.queue,
 			payload = EXCLUDED.payload,
+			timezone = EXCLUDED.timezone,
 			updated_at = CURRENT_TIMESTAMP`
 	for _, c := range crons {
-		if _, err := tx.ExecContext(ctx, query, c.Name, c.Spec, c.Queue, string(c.Payload)); err != nil {
+		if _, err := tx.ExecContext(ctx, query, c.Name, c.Spec, c.Queue, string(c.Payload), c.Timezone); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (p *PostgresStorage) GetJobDetail(ctx context.Context, jobID string) (*JobEnvelope, error) {

@@ -174,16 +174,24 @@ envelope := &queue.JobEnvelope{
 err := storage.Enqueue(ctx, envelope)
 ```
 
-Additionally, you can use the client helpers `EnqueueIn` (to execute a task after a duration) and `EnqueueAt` (to execute a task at a specific time):
+Additionally, you can use the client helpers `EnqueueIn` / `EnqueueWithDelay` (to execute a task after a duration) and `EnqueueAt` (to execute a task at a specific time):
 
 ```go
 // Enqueue job to run in 10 minutes
 err := client.EnqueueIn(ctx, "default", "SendEmail", []byte(`{"to":"user@example.com"}`), 10*time.Minute)
 
+// Alternatively, using the EnqueueWithDelay helper:
+err = client.EnqueueWithDelay(ctx, "default", "SendEmail", []byte(`{"to":"user@example.com"}`), 10*time.Minute)
+
 // Enqueue job to run at a specific timestamp
 targetTime := time.Now().Add(2 * time.Hour)
 err = client.EnqueueAt(ctx, "default", "SendEmail", []byte(`{"to":"user@example.com"}`), targetTime)
 ```
+
+> [!NOTE]
+> `EnqueueWithDelay` is a semantic wrapper for `EnqueueIn`. Both behave identically under the hood, allowing you to choose the naming style that best fits your codebase or matches your team's terminology preference.
+
+
 
 ## Unique Jobs
 
@@ -208,12 +216,19 @@ Locks are automatically released when the job completes successfully (`Ack`), fa
 
 ## Recurring Tasks (Cron Jobs)
 
-Runiq supports registering recurring background tasks using standard 5-field cron spec expressions (e.g., `*/15 * * * *`). To avoid duplicate job execution when running multiple replicas of the worker pool, Runiq acquires a distributed lock at the storage level:
+Runiq supports registering recurring background tasks using standard 5-field cron spec expressions (e.g., `*/15 * * * *`). To avoid duplicate job execution when running multiple replicas of the worker pool, Runiq acquires a distributed lock at the storage level.
+
+You can also specify a custom timezone location using `WithCronLocation`:
 
 ```go
 // Register a cron job to run every day at midnight UTC
 pool.RegisterCron("0 0 * * *", "default", "DailyReport", []byte(`{"format":"pdf"}`))
+
+// Register a cron job with a custom timezone location (e.g., America/New_York)
+loc, _ := time.LoadLocation("America/New_York")
+pool.RegisterCron("0 9 * * 1-5", "default", "WeekdayMorningSync", []byte(`{}`), queue.WithCronLocation(loc))
 ```
+
 
 The background scheduler runs automatically inside the `WorkerPool`. At the start of each matched minute, it attempts to acquire a lock for that minute. Only one worker instance in the cluster will succeed and enqueue the task.
 
@@ -310,13 +325,13 @@ Runiq supports grouping multiple background jobs into a cohesive workflow group 
 3. **Submit the Batch**: Seal the batch. This marks the batch enqueuing phase as completed.
 
 ```go
-// 1. Initialize the batch with a callback job
+// 1. Initialize the batch with a callback job and optional batch options (e.g. timeout)
 callback := &queue.JobEnvelope{
 	Queue: "default",
 	Name:  "OnSuccessCallback",
 	Args:  []byte(`{"status":"all_done"}`),
 }
-batch, err := client.NewBatch(ctx, callback)
+batch, err := client.NewBatch(ctx, callback, queue.WithBatchTimeout(5*time.Minute))
 if err != nil {
 	log.Fatalf("failed to create batch: %v", err)
 }
@@ -339,6 +354,7 @@ if err != nil {
 ### Safety & Resiliency
 - **Concurrency & Race Condition Immune**: Runiq tracks batches with state-based safety (`'open'`, `'sealed'`, `'completed'`, `'failed'`). If all parallel jobs finish before the batch is sealed with `Submit()`, the callback is safely deferred until `Submit()` is explicitly executed.
 - **Fail-Fast Failure Isolation**: If any job in the batch fails permanently (i.e. is sent to the Dead Letter Queue after exhausting its retries), the batch status transitions to `'failed'` immediately, preventing the callback from ever running.
+- **Batch Timeouts**: Setting `WithBatchTimeout(duration)` guarantees that if the parallel jobs are not all completed and the batch sealed/finished within the specified timeframe, the batch is automatically transitioned to `'failed'` state and the callback will not execute.
 - **Atomic Backend Storage**: Implemented with native transactions in PostgreSQL (using `FOR UPDATE` and count tracking) and pipeline operations in Redis (using hashes and sets).
 
 ## Job Dependencies (DAGs)

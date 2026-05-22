@@ -13,7 +13,7 @@ type FakeClientStorage struct {
 	DequeueFunc        func(ctx context.Context, queueName string) (*queue.JobEnvelope, error)
 	AckFunc            func(ctx context.Context, jobID string) error
 	FailFunc           func(ctx context.Context, jobID string, err error) error
-	CreateBatchFunc     func(ctx context.Context, batchID string, callback *queue.JobEnvelope) error
+	CreateBatchFunc     func(ctx context.Context, batchID string, callback *queue.JobEnvelope, expiresAt *time.Time) error
 	EnqueueInBatchFunc  func(ctx context.Context, batchID string, env *queue.JobEnvelope) error
 	SubmitBatchFunc     func(ctx context.Context, batchID string) error
 	EnqueueWorkflowFunc func(ctx context.Context, jobs ...*queue.JobEnvelope) error
@@ -55,9 +55,9 @@ func (f *FakeClientStorage) Fail(ctx context.Context, jobID string, err error) e
 	return nil
 }
 
-func (f *FakeClientStorage) CreateBatch(ctx context.Context, batchID string, callback *queue.JobEnvelope) error {
+func (f *FakeClientStorage) CreateBatch(ctx context.Context, batchID string, callback *queue.JobEnvelope, expiresAt *time.Time) error {
 	if f.CreateBatchFunc != nil {
-		return f.CreateBatchFunc(ctx, batchID, callback)
+		return f.CreateBatchFunc(ctx, batchID, callback, expiresAt)
 	}
 	return nil
 }
@@ -217,6 +217,7 @@ type FakeWorkerPoolStorage struct {
 	IsQueuePausedFunc       func(ctx context.Context, queueName string) (bool, error)
 	RegisterCronJobsFunc    func(ctx context.Context, crons []queue.CronJob) error
 	PurgeExpiredDLQFunc     func(ctx context.Context, ttl time.Duration) error
+	FailExpiredBatchesFunc  func(ctx context.Context) error
 }
 
 func (f *FakeWorkerPoolStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -327,6 +328,13 @@ func (f *FakeWorkerPoolStorage) RegisterCronJobs(ctx context.Context, crons []qu
 func (f *FakeWorkerPoolStorage) PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error {
 	if f.PurgeExpiredDLQFunc != nil {
 		return f.PurgeExpiredDLQFunc(ctx, ttl)
+	}
+	return nil
+}
+
+func (f *FakeWorkerPoolStorage) FailExpiredBatches(ctx context.Context) error {
+	if f.FailExpiredBatchesFunc != nil {
+		return f.FailExpiredBatchesFunc(ctx)
 	}
 	return nil
 }

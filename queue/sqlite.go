@@ -207,6 +207,7 @@ func createSqliteTables(ctx context.Context, db *sql.DB) error {
 		total_jobs INTEGER NOT NULL DEFAULT 0,
 		pending_jobs INTEGER NOT NULL DEFAULT 0,
 		status TEXT NOT NULL DEFAULT 'open',
+		expires_at DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -219,6 +220,7 @@ func createSqliteTables(ctx context.Context, db *sql.DB) error {
 		expression TEXT NOT NULL,
 		queue TEXT NOT NULL,
 		payload TEXT NOT NULL,
+		timezone TEXT DEFAULT 'UTC',
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -230,5 +232,15 @@ func createSqliteTables(ctx context.Context, db *sql.DB) error {
 	);
 	`
 	_, err := db.ExecContext(ctx, schema)
-	return err
+	if err != nil {
+		return err
+	}
+	runSqliteMigrations(ctx, db)
+	return nil
 }
+
+func runSqliteMigrations(ctx context.Context, db *sql.DB) {
+	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_batches ADD COLUMN expires_at DATETIME")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_cron_jobs ADD COLUMN timezone TEXT DEFAULT 'UTC'")
+}
+
