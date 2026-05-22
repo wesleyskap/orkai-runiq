@@ -1,6 +1,10 @@
 let activeTab = 'pending';
 let latestJobs = [];
 let registeredCrons = [];
+let currentPage = 1;
+let totalJobsCount = 0;
+let searchQuery = '';
+const selectedJobIDs = new Set();
 
 let chart = null;
 let chartLabels = [];
@@ -66,10 +70,16 @@ function initChart() {
 
 function switchTab(tab) {
     activeTab = tab;
+    currentPage = 1;
+    selectedJobIDs.clear();
+    const selectAllBox = document.getElementById('select-all-jobs');
+    if (selectAllBox) selectAllBox.checked = false;
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
     });
     document.getElementById('dlq-bulk-actions').style.display = tab === 'dead' ? 'flex' : 'none';
+    const bulkBar = document.getElementById('jobs-bulk-actions');
+    if (bulkBar) bulkBar.style.display = 'none';
     renderTabContent();
 }
 
@@ -77,17 +87,8 @@ function renderTabContent() {
     if (activeTab === 'cron') {
         renderCronJobs();
     } else {
-        renderJobs();
+        fetchJobs();
     }
-}
-
-function filterJobs(jobs, tab) {
-    return jobs.filter(j => {
-        if (tab === 'dead') {
-            return j.status === 'dead' || j.status === 'failed';
-        }
-        return j.status === tab;
-    });
 }
 
 function renderEmptyJobsState(tab) {
@@ -96,18 +97,22 @@ function renderEmptyJobsState(tab) {
     table.style.display = 'none';
     noJobs.style.display = 'block';
     noJobs.innerText = `No ${tab} jobs logs found.`;
+    const pag = document.getElementById('jobs-pagination');
+    if (pag) pag.style.display = 'none';
 }
 
 function createJobRow(j) {
     const tr = document.createElement('tr');
     tr.className = 'clickable-row';
     tr.addEventListener('click', (e) => {
-        if (e.target.closest('button')) return;
+        if (e.target.closest('button') || e.target.closest('input[type="checkbox"]')) return;
         openJobDetails(j.job_id);
     });
     const extraTd = activeTab === 'dead' ? `<td><div class="error-msg">${j.error_message || 'Unknown error'}</div></td>` : '';
     const actionsHtml = getJobActionsHtml(j);
+    const isChecked = selectedJobIDs.has(j.job_id) ? 'checked' : '';
     tr.innerHTML = `
+        <td style="text-align: center;"><input type="checkbox" class="job-select-checkbox" data-id="${j.job_id}" ${isChecked} onclick="toggleJobSelection(this, '${j.job_id}')"></td>
         <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${j.job_id}</td>
         <td style="font-weight: 600;">${j.queue}</td>
         <td>${j.name}</td>
@@ -140,20 +145,20 @@ function renderJobs() {
 
     document.getElementById('cron-table-wrapper').style.display = 'none';
     tbody.innerHTML = '';
-    const filtered = filterJobs(latestJobs, activeTab);
-    if (filtered.length === 0) {
+    if (latestJobs.length === 0) {
         renderEmptyJobsState(activeTab);
         return;
     }
     table.style.display = 'table';
     noJobs.style.display = 'none';
     thExtra.style.display = activeTab === 'dead' ? 'table-cell' : 'none';
-    filtered.forEach(j => tbody.appendChild(createJobRow(j)));
+    latestJobs.forEach(j => tbody.appendChild(createJobRow(j)));
 }
 
 function createCronRow(c) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
+        <td></td>
         <td style="font-weight: 600; color: #a5b4fc;">${c.name}</td>
         <td style="font-family: monospace; font-size: 0.85rem; color: var(--pending);">${c.expression}</td>
         <td style="font-weight: 600;">${c.queue}</td>
@@ -167,8 +172,10 @@ function renderCronJobs() {
     const noJobs = document.getElementById('no-jobs');
     const wrapper = document.getElementById('cron-table-wrapper');
     const table = document.getElementById('jobs-table');
+    const pag = document.getElementById('jobs-pagination');
     
     table.style.display = 'none';
+    if (pag) pag.style.display = 'none';
     tbody.innerHTML = '';
     if (registeredCrons.length === 0) {
         wrapper.style.display = 'none';
@@ -186,7 +193,7 @@ async function retryJob(jobId) {
     try {
         const res = await fetch(`/api/jobs/retry?id=${jobId}`, { method: 'POST' });
         if (!res.ok) throw new Error('Failed to retry job');
-        fetchStats();
+        fetchJobs();
     } catch (err) {
         alert(err.message);
     }
@@ -197,7 +204,7 @@ async function cancelJob(jobId) {
     try {
         const res = await fetch(`/api/jobs/cancel?id=${jobId}`, { method: 'POST' });
         if (!res.ok) throw new Error('Failed to cancel job');
-        fetchStats();
+        fetchJobs();
     } catch (err) {
         alert(err.message);
     }
@@ -208,7 +215,7 @@ async function clearQueue(queueName) {
     try {
         const res = await fetch(`/api/queues/clear?name=${queueName}`, { method: 'POST' });
         if (!res.ok) throw new Error('Failed to clear queue');
-        fetchStats();
+        fetchJobs();
     } catch (err) {
         alert(err.message);
     }
@@ -219,27 +226,136 @@ async function toggleQueue(queueName, action) {
     try {
         const res = await fetch(`/api/queues/${action}?name=${queueName}`, { method: 'POST' });
         if (!res.ok) throw new Error(`Failed to ${action} queue`);
-        fetchStats();
     } catch (err) {
         alert(err.message);
     }
 }
 
-async function fetchStats() {
+async function fetchJobs() {
+    if (activeTab === 'cron') return;
     try {
-        const res = await fetch('/api/stats');
-        if (!res.ok) throw new Error('Failed to fetch statistics');
+        const res = await fetch(`/api/jobs?q=${encodeURIComponent(searchQuery)}&status=${activeTab}&page=${currentPage}&limit=20`);
+        if (!res.ok) throw new Error('Failed to fetch jobs');
         const data = await res.json();
-        updateMainStats(data);
-        updatePerformanceChart(data);
-        renderQueues(data.queues || []);
-        renderProcesses(data.processes || []);
-        registeredCrons = data.cron_jobs || [];
         latestJobs = data.jobs || [];
-        renderTabContent();
+        totalJobsCount = data.total || 0;
+        renderJobs();
+        updatePaginationControls();
     } catch (err) {
         console.error(err);
     }
+}
+
+function updatePaginationControls() {
+    const wrapper = document.getElementById('jobs-pagination');
+    if (!wrapper) return;
+    if (latestJobs.length === 0 && currentPage === 1) {
+        wrapper.style.display = 'none';
+        return;
+    }
+    wrapper.style.display = 'flex';
+    const maxPage = Math.max(1, Math.ceil(totalJobsCount / 20));
+    document.getElementById('page-indicator').innerText = `Page ${currentPage} of ${maxPage}`;
+    document.getElementById('btn-prev-page').disabled = currentPage <= 1;
+    document.getElementById('btn-next-page').disabled = currentPage >= maxPage;
+}
+
+function prevPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        selectedJobIDs.clear();
+        const selectAllBox = document.getElementById('select-all-jobs');
+        if (selectAllBox) selectAllBox.checked = false;
+        updateBulkButtons();
+        fetchJobs();
+    }
+}
+
+function nextPage() {
+    const maxPage = Math.max(1, Math.ceil(totalJobsCount / 20));
+    if (currentPage < maxPage) {
+        currentPage++;
+        selectedJobIDs.clear();
+        const selectAllBox = document.getElementById('select-all-jobs');
+        if (selectAllBox) selectAllBox.checked = false;
+        updateBulkButtons();
+        fetchJobs();
+    }
+}
+
+function handleSearchInput() {
+    searchQuery = document.getElementById('jobs-search').value;
+    currentPage = 1;
+    selectedJobIDs.clear();
+    const selectAllBox = document.getElementById('select-all-jobs');
+    if (selectAllBox) selectAllBox.checked = false;
+    updateBulkButtons();
+    fetchJobs();
+}
+
+function toggleSelectAllJobs(checkbox) {
+    document.querySelectorAll('.job-select-checkbox').forEach(cb => {
+        cb.checked = checkbox.checked;
+        if (checkbox.checked) {
+            selectedJobIDs.add(cb.dataset.id);
+        } else {
+            selectedJobIDs.delete(cb.dataset.id);
+        }
+    });
+    updateBulkButtons();
+}
+
+function toggleJobSelection(checkbox, jobID) {
+    if (checkbox.checked) {
+        selectedJobIDs.add(jobID);
+    } else {
+        selectedJobIDs.delete(jobID);
+    }
+    const allChecked = Array.from(document.querySelectorAll('.job-select-checkbox')).every(cb => cb.checked);
+    const selectAllBox = document.getElementById('select-all-jobs');
+    if (selectAllBox) {
+        selectAllBox.checked = allChecked && selectedJobIDs.size > 0;
+    }
+    updateBulkButtons();
+}
+
+function updateBulkButtons() {
+    const container = document.getElementById('jobs-bulk-actions');
+    if (container) {
+        container.style.display = selectedJobIDs.size > 0 ? 'flex' : 'none';
+    }
+}
+
+async function bulkAction(endpoint, confirmMsg) {
+    if (selectedJobIDs.size === 0) return;
+    if (!confirm(`${confirmMsg} ${selectedJobIDs.size} selected jobs?`)) return;
+    try {
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: Array.from(selectedJobIDs) })
+        });
+        if (!res.ok) throw new Error('Bulk operation failed');
+        selectedJobIDs.clear();
+        const selectAllBox = document.getElementById('select-all-jobs');
+        if (selectAllBox) selectAllBox.checked = false;
+        updateBulkButtons();
+        fetchJobs();
+    } catch (err) {
+        alert(err.message);
+    }
+}
+
+function bulkRetrySelected() {
+    bulkAction('/api/jobs/bulk-retry', 'Are you sure you want to retry');
+}
+
+function bulkCancelSelected() {
+    bulkAction('/api/jobs/bulk-cancel', 'Are you sure you want to cancel');
+}
+
+function bulkPurgeSelected() {
+    bulkAction('/api/jobs/bulk-purge', 'Are you sure you want to purge');
 }
 
 function updateMainStats(data) {
@@ -398,7 +514,6 @@ function renderPayload(args) {
 }
 
 function closeJobDetailsModal() {
-    // Hide details modal container
     document.getElementById('job-details-modal').style.display = 'none';
 }
 
@@ -414,7 +529,6 @@ async function retryAllFailed() {
     try {
         const res = await fetch('/api/jobs/failed/retry', { method: 'POST' });
         if (!res.ok) throw new Error('Failed to retry all jobs');
-        fetchStats();
     } catch (err) {
         alert(err.message);
     }
@@ -425,12 +539,36 @@ async function purgeAllFailed() {
     try {
         const res = await fetch('/api/jobs/failed/purge', { method: 'POST' });
         if (!res.ok) throw new Error('Failed to purge all jobs');
-        fetchStats();
     } catch (err) {
         alert(err.message);
     }
 }
 
+// Connect to SSE metrics stream
+function connectStatsStream() {
+    const stream = new EventSource('/api/stats/stream');
+    stream.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            updateMainStats(data);
+            updatePerformanceChart(data);
+            renderQueues(data.queues || []);
+            renderProcesses(data.processes || []);
+            registeredCrons = data.cron_jobs || [];
+            if (activeTab === 'cron') {
+                renderCronJobs();
+            }
+        } catch (err) {
+            console.error("SSE parse error", err);
+        }
+    };
+    stream.onerror = () => {
+        stream.close();
+        setTimeout(connectStatsStream, 3000);
+    };
+}
+
 // Initial pull and setup
-fetchStats();
-setInterval(fetchStats, 5000);
+fetchJobs();
+connectStatsStream();
+setInterval(fetchJobs, 5000);

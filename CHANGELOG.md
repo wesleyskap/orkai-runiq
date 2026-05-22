@@ -2,6 +2,15 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.6.0] - 2026-05-22
+
+### Added
+- **Job Search & Pagination**: Added job name, ID, and trace ID search filtering on the dashboard server. Job listings are now fully paginated.
+- **Bulk Job Operations**: Introduced bulk actions to retry, cancel, or purge multiple selected jobs concurrently (`BulkRetry`, `BulkCancel`, `BulkPurge`) from the dashboard UI and REST endpoints.
+- **Real-time Server-Sent Events (SSE)**: Replaced interval polling for dashboard statistics with a persistent Server-Sent Events (SSE) `/api/stats/stream` connection, reducing backend overhead.
+- **Prometheus Metrics Exposer**: Added a `/metrics` HTTP endpoint displaying queue statuses, processed/failed/pending/running job counters, and queue paused status for Prometheus scraping.
+- **CLI: Worker-Only Mode**: Added support for running the Runiq CLI in worker-only mode (`runiq worker ...` or `cfg.workerOnly`) which bypasses the dashboard HTTP server startup.
+
 ## [2.5.0] - 2026-05-21
 
 ### Added

@@ -120,6 +120,7 @@ type config struct {
 	authUser    string
 	authPass    string
 	concurrency int
+	workerOnly  bool
 }
 
 func main() {
@@ -132,6 +133,10 @@ func main() {
 
 func parseFlags() config {
 	cfg := config{}
+	if len(os.Args) > 1 && os.Args[1] == "worker" {
+		cfg.workerOnly = true
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+	}
 	flag.StringVar(&cfg.port, "port", ":8080", "Dashboard port")
 	flag.StringVar(&cfg.dsn, "dsn", "", "Connection string for storage backend")
 	flag.StringVar(&cfg.driver, "driver", "", "Database driver (postgres, redis, sqlite)")
@@ -242,38 +247,56 @@ func runDashboardServer(srv *queue.Server, cfg config) {
 	}
 }
 
-func startServices(cfg config, storage interface{}, queues []string) {
-	poolStore, _ := storage.(queue.WorkerPoolStorage)
-	serverStore, _ := storage.(queue.ServerStorage)
-	if poolStore == nil || serverStore == nil {
-		log.Fatalf("storage engine does not support worker pool or server operations")
-	}
-	pool := queue.NewWorkerPool(poolStore, cfg.concurrency)
+func createWorkerPool(store queue.WorkerPoolStorage, concurrency int) *queue.WorkerPool {
+	pool := queue.NewWorkerPool(store, concurrency)
 	pool.Register("shell", &ShellJob{})
 	pool.Register("webhook", &WebhookJob{})
+	return pool
+}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go runWorkerPool(ctx, pool, queues)
+func startDashboardIfEnabled(cfg config, storage interface{}) *queue.Server {
+	if cfg.workerOnly {
+		return nil
+	}
+	serverStore, _ := storage.(queue.ServerStorage)
+	if serverStore == nil {
+		log.Fatalf("storage engine does not support server operations")
+	}
 	srv := buildServer(cfg, serverStore)
 	go runDashboardServer(srv, cfg)
+	return srv
+}
+
+func startServices(cfg config, storage interface{}, queues []string) {
+	poolStore, _ := storage.(queue.WorkerPoolStorage)
+	if poolStore == nil {
+		log.Fatalf("storage engine does not support worker pool operations")
+	}
+	pool := createWorkerPool(poolStore, cfg.concurrency)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runWorkerPool(ctx, pool, queues)
+	srv := startDashboardIfEnabled(cfg, storage)
 	handleShutdown(cancel, srv)
+}
+
+func shutdownServer(srv *queue.Server) {
+	if srv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("Dashboard server shutdown error: %v", err)
+	}
 }
 
 func handleShutdown(cancel context.CancelFunc, srv *queue.Server) {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
-
 	log.Println("Shutting down gracefully...")
 	cancel()
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Dashboard server shutdown error: %v", err)
-	}
+	shutdownServer(srv)
 	log.Println("Runiq stopped.")
 }

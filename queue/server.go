@@ -4,8 +4,12 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 //go:embed assets/*
@@ -63,6 +67,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/jobs/detail", s.handleJobDetail)
 	mux.HandleFunc("/api/jobs/failed/retry", s.handleRetryAllFailed)
 	mux.HandleFunc("/api/jobs/failed/purge", s.handlePurgeAllFailed)
+	mux.HandleFunc("/api/jobs", s.handleGetJobs)
+	mux.HandleFunc("/api/stats/stream", s.handleStatsStream)
+	mux.HandleFunc("/api/jobs/bulk-retry", s.handleBulkRetry)
+	mux.HandleFunc("/api/jobs/bulk-cancel", s.handleBulkCancel)
+	mux.HandleFunc("/api/jobs/bulk-purge", s.handleBulkPurge)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	sub, err := fs.Sub(assetsFS, "assets")
 	if err == nil {
@@ -237,5 +247,141 @@ func (s *Server) handlePurgeAllFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+type JobsResponse struct {
+	Jobs  []JobDetail `json:"jobs"`
+	Total int64       `json:"total"`
+}
+
+func (s *Server) handleGetJobs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	status := r.URL.Query().Get("status")
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	jobs, total, err := s.storage.GetJobs(r.Context(), q, status, page, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(JobsResponse{Jobs: jobs, Total: total})
+}
+
+func (s *Server) handleStatsStream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	for r.Context().Err() == nil && s.sendStreamStats(w, r.Context()) == nil {
+		time.Sleep(time.Second)
+	}
+}
+
+func (s *Server) sendStreamStats(w http.ResponseWriter, ctx context.Context) error {
+	stats, err := s.storage.GetStats(ctx)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(stats)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
+}
+
+type BulkRequest struct {
+	IDs []string `json:"ids"`
+}
+
+func decodeBulkIDs(r *http.Request) ([]string, error) {
+	var req BulkRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	return req.IDs, err
+}
+
+func (s *Server) handleBulkRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ids, err := decodeBulkIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.BulkRetry(r.Context(), ids); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleBulkCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ids, err := decodeBulkIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.BulkCancel(r.Context(), ids); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleBulkPurge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ids, err := decodeBulkIDs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.BulkPurge(r.Context(), ids); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func writeQueueMetric(w io.Writer, metric, queue, status string, val int64) {
+	_, err := fmt.Fprintf(w, "%s{queue=\"%s\", status=\"%s\"} %d\n", metric, queue, status, val)
+	if err != nil {
+		return
+	}
+}
+
+func writeQueuePausedMetric(w io.Writer, queue string, paused bool) {
+	val := 0
+	if paused {
+		val = 1
+	}
+	_, _ = fmt.Fprintf(w, "runiq_queue_paused{queue=\"%s\"} %d\n", queue, val)
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.storage.GetStats(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	for _, q := range stats.Queues {
+		writeQueueMetric(w, "runiq_jobs_count", q.Name, "pending", q.Pending)
+		writeQueueMetric(w, "runiq_jobs_count", q.Name, "running", q.Running)
+		writeQueueMetric(w, "runiq_jobs_count", q.Name, "failed", q.Failed)
+		writeQueueMetric(w, "runiq_jobs_count", q.Name, "processed", q.Processed)
+		writeQueuePausedMetric(w, q.Name, q.Paused)
+	}
 }
 

@@ -87,6 +87,10 @@ type FakeServerStorage struct {
 	PurgeAllFailedFunc func(ctx context.Context) error
 	PingFunc           func(ctx context.Context) error
 	GetJobDetailFunc   func(ctx context.Context, jobID string) (*queue.JobEnvelope, error)
+	GetJobsFunc        func(ctx context.Context, q, status string, page, limit int) ([]queue.JobDetail, int64, error)
+	BulkRetryFunc      func(ctx context.Context, jobIDs []string) error
+	BulkCancelFunc     func(ctx context.Context, jobIDs []string) error
+	BulkPurgeFunc      func(ctx context.Context, jobIDs []string) error
 }
 
 func (f *FakeServerStorage) GetStats(ctx context.Context) (*queue.Stats, error) {
@@ -157,6 +161,34 @@ func (f *FakeServerStorage) GetJobDetail(ctx context.Context, jobID string) (*qu
 		return f.GetJobDetailFunc(ctx, jobID)
 	}
 	return nil, nil
+}
+
+func (f *FakeServerStorage) GetJobs(ctx context.Context, q, status string, page, limit int) ([]queue.JobDetail, int64, error) {
+	if f.GetJobsFunc != nil {
+		return f.GetJobsFunc(ctx, q, status, page, limit)
+	}
+	return nil, 0, nil
+}
+
+func (f *FakeServerStorage) BulkRetry(ctx context.Context, jobIDs []string) error {
+	if f.BulkRetryFunc != nil {
+		return f.BulkRetryFunc(ctx, jobIDs)
+	}
+	return nil
+}
+
+func (f *FakeServerStorage) BulkCancel(ctx context.Context, jobIDs []string) error {
+	if f.BulkCancelFunc != nil {
+		return f.BulkCancelFunc(ctx, jobIDs)
+	}
+	return nil
+}
+
+func (f *FakeServerStorage) BulkPurge(ctx context.Context, jobIDs []string) error {
+	if f.BulkPurgeFunc != nil {
+		return f.BulkPurgeFunc(ctx, jobIDs)
+	}
+	return nil
 }
 
 // FakeWorkerPoolStorage implements queue.WorkerPoolStorage.

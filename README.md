@@ -363,14 +363,20 @@ You can pause and resume queues directly through:
 
 Runiq's dashboard contains interactive buttons to manage tasks directly. The server exposes the following endpoints:
 
+* **Get Jobs (Search & Pagination)**: `GET /api/jobs?q=<query>&status=<status>&page=<page>&limit=<limit>` searches and paginates jobs by ID, name, or trace ID under a specific status tab.
 * **Get Job Details**: `GET /api/jobs/detail?id=<job_id>` retrieves the raw details of a job, including raw arguments and full error logs.
 * **Retry Job**: `POST /api/jobs/retry?id=<job_id>` resets the attempts counter and schedules a failed job for immediate retry.
 * **Cancel Job**: `POST /api/jobs/cancel?id=<job_id>` deletes a pending, scheduled, or failed job from the queue.
+* **Bulk Retry Selected**: `POST /api/jobs/bulk-retry` takes a JSON body `{"ids": ["job1", "job2"]}` and retries the specified jobs.
+* **Bulk Cancel Selected**: `POST /api/jobs/bulk-cancel` takes a JSON body `{"ids": ["job1", "job2"]}` and cancels the specified jobs.
+* **Bulk Purge Selected**: `POST /api/jobs/bulk-purge` takes a JSON body `{"ids": ["job1", "job2"]}` and permanently deletes the specified jobs.
 * **Bulk Retry Failed**: `POST /api/jobs/failed/retry` retries all failed and DLQ tasks globally.
 * **Bulk Purge Failed**: `POST /api/jobs/failed/purge` permanently deletes all failed and DLQ tasks globally.
 * **Clear Queue**: `POST /api/queues/clear?name=<queue_name>` removes all pending, active, scheduled, completed, and failed jobs from a specific queue.
 * **Pause Queue**: `POST /api/queues/pause?name=<queue_name>` pauses job processing from the specified queue.
 * **Resume Queue**: `POST /api/queues/resume?name=<queue_name>` resumes job processing from the specified queue.
+* **Real-Time Stats Stream**: `GET /api/stats/stream` exposes a Server-Sent Events (SSE) text stream for instant live dashboard UI updates.
+* **Prometheus Metrics**: `GET /metrics` exports active queue lengths, execution states, and queue paused states formatted for Prometheus scraping.
 
 ## Dashboard Authentication & Custom Middlewares
 
@@ -591,6 +597,19 @@ The CLI supports the following configuration flags:
 * `--dsn` (mandatory): The connection string / path for the chosen storage driver.
 * `--queue` (mandatory): Comma-separated list of queues to poll and process.
 * `--concurrency` (default `10`): The maximum number of concurrent worker goroutines.
+
+### Worker-Only Mode
+
+If you wish to run only the background worker poller without spinning up the dashboard HTTP server, you can pass `worker` as the first argument to the command (before any flags):
+
+* **Linux / macOS:**
+  ```bash
+  ./runiq worker --driver sqlite --dsn runiq.db --queue default
+  ```
+* **Windows:**
+  ```powershell
+  .\runiq.exe worker --driver sqlite --dsn runiq.db --queue default
+  ```
 
 ### Built-in Generic Job Handlers
 

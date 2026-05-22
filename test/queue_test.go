@@ -190,6 +190,30 @@ func (f *FakeStorage) PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) er
 	return nil
 }
 
+func (f *FakeStorage) GetJobs(ctx context.Context, q, status string, page, limit int) ([]queue.JobDetail, int64, error) {
+	_ = ctx
+	_ = q
+	return nil, 0, nil
+}
+
+func (f *FakeStorage) BulkRetry(ctx context.Context, jobIDs []string) error {
+	_ = ctx
+	f.Retried = append(f.Retried, jobIDs...)
+	return nil
+}
+
+func (f *FakeStorage) BulkCancel(ctx context.Context, jobIDs []string) error {
+	_ = ctx
+	f.Cancelled = append(f.Cancelled, jobIDs...)
+	return nil
+}
+
+func (f *FakeStorage) BulkPurge(ctx context.Context, jobIDs []string) error {
+	_ = ctx
+	_ = jobIDs
+	return nil
+}
+
 
 
 

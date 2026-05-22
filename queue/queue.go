@@ -222,6 +222,10 @@ type ServerStorage interface {
 	JobAdmin
 	Pinger
 	GetJobDetail(ctx context.Context, jobID string) (*JobEnvelope, error)
+	GetJobs(ctx context.Context, q, status string, page, limit int) ([]JobDetail, int64, error)
+	BulkRetry(ctx context.Context, jobIDs []string) error
+	BulkCancel(ctx context.Context, jobIDs []string) error
+	BulkPurge(ctx context.Context, jobIDs []string) error
 }
 
 // CronJob represents a scheduled recurring task definition.

@@ -102,9 +102,18 @@
                     <button class="btn btn-danger" onclick="purgeAllFailed()">Purge All</button>
                 </div>
             </div>
+            <div class="jobs-controls" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 1rem 0;">
+                <input type="text" id="jobs-search" placeholder="Search by name, ID, or trace..." oninput="handleSearchInput()" style="flex: 1; min-width: 200px; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid var(--border-color); background: rgba(0, 0, 0, 0.2); color: var(--text-color);">
+                <div id="jobs-bulk-actions" style="display: none; align-items: center; gap: 0.5rem;">
+                    <button class="btn btn-primary" onclick="bulkRetrySelected()">Retry Selected</button>
+                    <button class="btn btn-warning" onclick="bulkCancelSelected()">Cancel Selected</button>
+                    <button class="btn btn-danger" onclick="bulkPurgeSelected()">Purge Selected</button>
+                </div>
+            </div>
             <table id="jobs-table">
                 <thead>
                     <tr>
+                        <th style="width: 40px; text-align: center;"><input type="checkbox" id="select-all-jobs" onclick="toggleSelectAllJobs(this)"></th>
                         <th>Job ID</th>
                         <th>Queue</th>
                         <th>Job Name</th>
@@ -117,6 +126,11 @@
                     <!-- Dynamic Job Rows -->
                 </tbody>
             </table>
+            <div id="jobs-pagination" class="pagination" style="display: none; justify-content: center; align-items: center; gap: 1rem; margin-top: 1.5rem;">
+                <button class="btn" id="btn-prev-page" onclick="prevPage()">Prev</button>
+                <span id="page-indicator" style="font-size: 0.9rem; color: var(--text-muted);">Page 1</span>
+                <button class="btn" id="btn-next-page" onclick="nextPage()">Next</button>
+            </div>
             <div id="cron-table-wrapper" style="display: none;">
                 <table id="cron-table">
                     <thead>
