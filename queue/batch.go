@@ -37,40 +37,35 @@ func validateCallback(cb *JobEnvelope) error {
 	return nil
 }
 
-// NewBatch initializes a new batch of jobs with a callback job.
-// Usage example:
-//	batch, err := client.NewBatch(ctx, &queue.JobEnvelope{
-//		Queue: "default",
-//		Name:  "OnSuccessCallback",
-//		Args:  []byte(`{}`),
-//	})
-func (c *Client) NewBatch(ctx context.Context, callback *JobEnvelope, opts ...BatchOption) (*Batch, error) {
-	if err := validateCallback(callback); err != nil {
-		return nil, err
-	}
+func evaluateBatchOptions(opts ...BatchOption) *time.Time {
 	var cfg batchOptions
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	var expiresAt *time.Time
-	if cfg.timeout > 0 {
-		t := time.Now().Add(cfg.timeout)
-		expiresAt = &t
+	if cfg.timeout <= 0 {
+		return nil
 	}
-	batchID := generateJobID()
-	if err := c.storage.CreateBatch(ctx, batchID, callback, expiresAt); err != nil {
+	t := time.Now().Add(cfg.timeout)
+	return &t
+}
+
+// NewBatch initializes a new batch of jobs with a callback job.
+func (c *Client) NewBatch(ctx context.Context, callback *JobEnvelope, opts ...BatchOption) (*Batch, error) {
+	if err := validateCallback(callback); err != nil {
 		return nil, err
 	}
-	return &Batch{
-		ID:       batchID,
-		client:   c,
-		callback: callback,
-	}, nil
+	expiresAt := evaluateBatchOptions(opts...)
+	batchID := generateJobID()
+	err := c.execute(func() error {
+		return c.storage.CreateBatch(ctx, batchID, callback, expiresAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Batch{ID: batchID, client: c, callback: callback}, nil
 }
 
 // Enqueue adds a job to the batch and enqueues it immediately in the storage backend.
-// Usage example:
-//	err := batch.Enqueue(ctx, "default", "ProcessSegment", segment1)
 func (b *Batch) Enqueue(ctx context.Context, queueName, name string, args []byte) error {
 	traceID, spanID := b.client.tracer.ExtractTrace(ctx)
 	env := &JobEnvelope{
@@ -85,12 +80,14 @@ func (b *Batch) Enqueue(ctx context.Context, queueName, name string, args []byte
 			SpanID:  spanID,
 		},
 	}
-	return b.client.storage.EnqueueInBatch(ctx, b.ID, env)
+	return b.client.execute(func() error {
+		return b.client.storage.EnqueueInBatch(ctx, b.ID, env)
+	})
 }
 
 // Submit seals the batch enqueuing phase, marking it ready to trigger the callback when done.
-// Usage example:
-//	err := batch.Submit(ctx)
 func (b *Batch) Submit(ctx context.Context) error {
-	return b.client.storage.SubmitBatch(ctx, b.ID)
+	return b.client.execute(func() error {
+		return b.client.storage.SubmitBatch(ctx, b.ID)
+	})
 }

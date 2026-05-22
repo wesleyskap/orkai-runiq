@@ -9,6 +9,7 @@ import (
 type Client struct {
 	storage ClientStorage
 	tracer  Tracer
+	cb      *circuitBreaker
 }
 
 // NewClient creates a new Client instance.
@@ -35,6 +36,26 @@ func WithClientTracer(t Tracer) ClientOption {
 	}
 }
 
+// WithCircuitBreaker configures a Client-Side Circuit Breaker for the Client.
+func WithCircuitBreaker(cfg CircuitBreakerConfig) ClientOption {
+	return func(c *Client) {
+		c.cb = newCircuitBreaker(cfg)
+	}
+}
+
+func (c *Client) execute(fn func() error) error {
+	if c.cb == nil {
+		return fn()
+	}
+	if err := c.cb.beforeCall(); err != nil {
+		return err
+	}
+	start := time.Now()
+	err := fn()
+	c.cb.afterCall(err, time.Since(start))
+	return err
+}
+
 // Enqueue serializes and schedules a background job.
 func (c *Client) Enqueue(ctx context.Context, queueName, name string, args []byte) error {
 	traceID, spanID := c.tracer.ExtractTrace(ctx)
@@ -49,7 +70,9 @@ func (c *Client) Enqueue(ctx context.Context, queueName, name string, args []byt
 			SpanID:  spanID,
 		},
 	}
-	return c.storage.Enqueue(ctx, env)
+	return c.execute(func() error {
+		return c.storage.Enqueue(ctx, env)
+	})
 }
 
 // EnqueueIn schedules a job to be executed after a duration delay.
@@ -73,7 +96,9 @@ func (c *Client) EnqueueAt(ctx context.Context, queueName, name string, args []b
 			SpanID:  spanID,
 		},
 	}
-	return c.storage.Enqueue(ctx, env)
+	return c.execute(func() error {
+		return c.storage.Enqueue(ctx, env)
+	})
 }
 
 // EnqueueUnique schedules a unique job that is protected by a uniqueness lock.
@@ -92,7 +117,9 @@ func (c *Client) EnqueueUnique(ctx context.Context, queueName, name string, args
 			SpanID:  spanID,
 		},
 	}
-	return c.storage.Enqueue(ctx, env)
+	return c.execute(func() error {
+		return c.storage.Enqueue(ctx, env)
+	})
 }
 
 // NewJob instantiates a JobEnvelope with a pre-generated ID.
@@ -128,7 +155,9 @@ func (c *Client) EnqueueWorkflow(ctx context.Context, jobs ...*JobEnvelope) erro
 			job.TraceContext.SpanID = spanID
 		}
 	}
-	return c.storage.EnqueueWorkflow(ctx, jobs...)
+	return c.execute(func() error {
+		return c.storage.EnqueueWorkflow(ctx, jobs...)
+	})
 }
 
 // EnqueueWithDelay schedules a job to be executed after a relative duration delay.

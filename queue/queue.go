@@ -45,10 +45,12 @@ type JobDetail struct {
 
 // ProcessInfo represents metadata of an active worker pool process.
 type ProcessInfo struct {
-	Queues      []string  `json:"queues"`
-	HeartbeatAt time.Time `json:"heartbeat_at"`
-	ProcessID   string    `json:"process_id"`
-	Concurrency int       `json:"concurrency"`
+	Queues         []string  `json:"queues"`
+	HeartbeatAt    time.Time `json:"heartbeat_at"`
+	ProcessID      string    `json:"process_id"`
+	Concurrency    int       `json:"concurrency"`
+	MinConcurrency int       `json:"min_concurrency"`
+	MaxConcurrency int       `json:"max_concurrency"`
 }
 
 // QueueStats holds job counts grouped by queue.
@@ -214,6 +216,7 @@ type WorkerPoolStorage interface {
 	CronLocker
 	JobThrottler
 	Pinger
+	JobStats
 	IsQueuePaused(ctx context.Context, queue string) (bool, error)
 	RegisterCronJobs(ctx context.Context, crons []CronJob) error
 	PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error

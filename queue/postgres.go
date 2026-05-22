@@ -172,7 +172,9 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		process_id VARCHAR(255) PRIMARY KEY,
 		concurrency INT NOT NULL,
 		queues TEXT NOT NULL,
-		heartbeat_at TIMESTAMP WITH TIME ZONE NOT NULL
+		heartbeat_at TIMESTAMP WITH TIME ZONE NOT NULL,
+		min_concurrency INT NOT NULL DEFAULT 0,
+		max_concurrency INT NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS runiq_cron_locks (
@@ -253,6 +255,8 @@ func runPostgresMigrations(ctx context.Context, db *sql.DB) {
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 		)`)
+	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_processes ADD COLUMN IF NOT EXISTS min_concurrency INT NOT NULL DEFAULT 0")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_processes ADD COLUMN IF NOT EXISTS max_concurrency INT NOT NULL DEFAULT 0")
 }
 
 

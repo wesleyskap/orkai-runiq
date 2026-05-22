@@ -244,7 +244,7 @@ All active registered cron schedules (including target queues and arguments) are
 
 When a `WorkerPool` starts, it automatically registers itself with the storage driver using a unique process identifier (comprising the hostname, PID, and a random token). The worker pool then maintains a periodic background heartbeat ticker (every 5 seconds) to signal its health.
 
-The dashboard UI automatically aggregates these worker heartbeats and renders them in the **Active Processes (Workers)** panel, listing all active processes, their concurrency configurations, and their monitored queues. Dead workers are automatically pruned after 15 seconds of inactivity.
+The dashboard UI automatically aggregates these worker heartbeats and renders them in the **Active Processes (Workers)** panel, listing all active processes, their current active worker count, their concurrency configuration range (min and max limits if autoscaling is enabled), and their monitored queues. Dead workers are automatically pruned after 15 seconds of inactivity.
 
 ## Worker Shutdown
 
@@ -391,6 +391,62 @@ err := client.EnqueueWorkflow(ctx, jobA, jobB, jobC)
 - **Dependency Resolution**: When a parent job completes successfully (`Ack`), the database resolves its child dependencies. Once a blocked child job has all its parent dependencies completed, it is automatically transitioned to `'pending'` and unlocked for processing.
 - **Fail-Fast Cascade**: If any parent task fails permanently (exhausts all retries and transitions to `'dead'`), Runiq automatically cascades the failure downstream, moving all child and grandchild jobs to the DLQ (`'dead'` state) with a descriptive dependency failure error message.
 - **Cascade Cancellation**: Cancelling a parent job (using `Cancel`) also recursively cancels all downstream child tasks.
+
+## Client-Side Circuit Breaker
+
+To prevent database lockups and client application stalls under heavy database pressure or latency spikes, Runiq includes a client-side circuit breaker.
+
+The circuit breaker wraps all write operations on the `Client` (such as `Enqueue`, `EnqueueIn`/`EnqueueWithDelay`, `EnqueueAt`, `EnqueueUnique`, `EnqueueWorkflow`, and `Batch` enqueuing). If write failures or execution times exceeding a latency threshold occur repeatedly, the circuit breaker trips open to protect the database backend by failing subsequent client writes fast with `ErrCircuitBreakerOpen`.
+
+### Configuration
+
+The circuit breaker is configured using `CircuitBreakerConfig` and enabled via `WithCircuitBreaker` option when initializing the client:
+
+```go
+cfg := queue.CircuitBreakerConfig{
+	Cooldown:         10 * time.Second, // Duration to wait before attempting recovery (transition to Half-Open)
+	LatencyThreshold: 50 * time.Millisecond, // Write durations exceeding this are recorded as failures (optional, 0 to disable)
+	FailureThreshold: 5, // Consecutive failures before tripping the breaker Open
+}
+
+client := queue.NewClient(storage, queue.WithCircuitBreaker(cfg))
+```
+
+### State Transitions
+
+- **Closed**: Normal operation. All write requests pass through to the database storage.
+- **Open**: When consecutive database write errors or latency-exceeded calls reach the `FailureThreshold`, the breaker trips to **Open**. Subsequent client-side writes fail fast immediately returning `queue.ErrCircuitBreakerOpen`.
+- **Half-Open**: After the `Cooldown` duration passes, the next client write is allowed to pass through as a trial. If it succeeds, the breaker resets to **Closed** and resets the failure counter. If it fails, the breaker transitions back to **Open** and restarts the cooldown timer.
+
+## Dynamic Concurrency (Autoscaling)
+
+Runiq's `WorkerPool` can scale its concurrency (active worker goroutines) dynamically at runtime based on the total number of pending jobs in its monitored queues. This prevents resource starvation while handling traffic spikes, and frees up system resources during quiet periods.
+
+The pool starts with a minimum number of worker slots (`MinConcurrency`) and scales up in increments (`ScaleUpStep`) to a maximum limit (`MaxConcurrency`) when queue depth exceeds a defined limit. It scales back down (`ScaleDownStep`) to `MinConcurrency` once the queue depth drops to 0.
+
+### Configuration
+
+To enable autoscaling, use the `WithDynamicConcurrency` option when creating a `WorkerPool`:
+
+```go
+cfg := queue.DynamicConcurrencyConfig{
+	CheckInterval:   5 * time.Second,   // How often the pool checks the monitored queue depths
+	MinConcurrency:  2,                 // Minimum workers to keep alive
+	MaxConcurrency:  10,                // Maximum workers to scale up to
+	QueueDepthLimit: 20,                // Combined pending jobs depth threshold to trigger scaling up
+	ScaleUpStep:     2,                 // Workers to add per check if depth is exceeded
+	ScaleDownStep:   1,                 // Workers to remove per check if queues are empty
+}
+
+// Initialize worker pool with autoscaling. 
+// The default concurrency (2) serves as the starting point.
+pool := queue.NewWorkerPool(storage, 2, queue.WithDynamicConcurrency(cfg))
+```
+
+### Scaling Mechanics
+
+- **Safe Concurrency Adjustments**: The `WorkerPool` scales concurrency dynamically by resizing an internal semaphore channel. This ensures that adjusting worker goroutines is lock-free and occurs without interrupting already executing jobs.
+- **Heartbeat & Registry integration**: Autoscaling pools periodically update their current concurrency metrics to the database process registry. The Runiq dashboard renders this dynamic concurrency range alongside the active worker count in real time.
 
 ## Dynamic Queue Pause & Resume
 

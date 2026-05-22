@@ -27,9 +27,17 @@ type FakeStorage struct {
 	PausedQueues         map[string]bool
 	ModifiedRetries      map[string][]byte
 	CronSchedules        []queue.CronJob
+	EnqueueErr           error
+	EnqueueDelay         time.Duration
 }
 
 func (f *FakeStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
+	if f.EnqueueDelay > 0 {
+		time.Sleep(f.EnqueueDelay)
+	}
+	if f.EnqueueErr != nil {
+		return f.EnqueueErr
+	}
 	f.Enqueued = append(f.Enqueued, env)
 	return nil
 }

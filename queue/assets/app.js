@@ -478,9 +478,12 @@ function createProcessRow(p) {
     const tr = document.createElement('tr');
     const hTime = new Date(p.heartbeat_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const queuesStr = p.queues ? p.queues.join(', ') : 'None';
+    const concurrencyStr = p.max_concurrency > 0
+        ? `${p.concurrency} <span style="font-size: 0.75rem; color: var(--text-muted);">(Autoscaling: ${p.min_concurrency}-${p.max_concurrency})</span>`
+        : `${p.concurrency}`;
     tr.innerHTML = `
         <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${p.process_id}</td>
-        <td style="font-weight: 600;">${p.concurrency}</td>
+        <td style="font-weight: 600;">${concurrencyStr}</td>
         <td>${queuesStr}</td>
         <td style="color: var(--running);">${hTime}</td>
     `;

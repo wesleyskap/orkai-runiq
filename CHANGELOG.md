@@ -2,6 +2,13 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.10.0] - 2026-05-22
+
+### Added
+- **Client-Side Circuit Breaker**: Prevent client enqueuing stalls and protect backend storage by automatically failing writes fast when database errors or latency thresholds are breached.
+- **Dynamic Concurrency (Autoscaling)**: Automatically scale active worker pool goroutines up and down between configured minimum and maximum bounds based on monitored queue pending counts.
+- **Dashboard Process Registry Integration**: Real-time worker processes panel displaying autoscaled configuration ranges and current worker execution concurrency limits dynamically.
+
 ## [2.9.0] - 2026-05-22
 
 ### Added

@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 )
@@ -12,11 +13,11 @@ func (p *PostgresStorage) RegisterProcess(ctx context.Context, info *ProcessInfo
 		return err
 	}
 	query := `
-		INSERT INTO runiq_processes (process_id, concurrency, queues, heartbeat_at)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO runiq_processes (process_id, concurrency, queues, heartbeat_at, min_concurrency, max_concurrency)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (process_id) DO UPDATE SET
-			concurrency = $2, queues = $3, heartbeat_at = $4`
-	_, err = p.db.ExecContext(ctx, query, info.ProcessID, info.Concurrency, string(queuesJSON), info.HeartbeatAt)
+			concurrency = $2, queues = $3, heartbeat_at = $4, min_concurrency = $5, max_concurrency = $6`
+	_, err = p.db.ExecContext(ctx, query, info.ProcessID, info.Concurrency, string(queuesJSON), info.HeartbeatAt, info.MinConcurrency, info.MaxConcurrency)
 	return err
 }
 
@@ -27,26 +28,28 @@ func (p *PostgresStorage) HeartbeatProcess(ctx context.Context, processID string
 }
 
 func (p *PostgresStorage) GetActiveProcesses(ctx context.Context) ([]ProcessInfo, error) {
-	deadTimeLimit := time.Now().Add(-15 * time.Second)
-	_, _ = p.db.ExecContext(ctx, "DELETE FROM runiq_processes WHERE heartbeat_at < $1", deadTimeLimit)
-
-	rows, err := p.db.QueryContext(ctx, "SELECT process_id, concurrency, queues, heartbeat_at FROM runiq_processes ORDER BY heartbeat_at DESC")
+	dead := time.Now().Add(-15 * time.Second)
+	_, _ = p.db.ExecContext(ctx, "DELETE FROM runiq_processes WHERE heartbeat_at < $1", dead)
+	rows, err := p.db.QueryContext(ctx, "SELECT process_id, concurrency, queues, heartbeat_at, min_concurrency, max_concurrency FROM runiq_processes ORDER BY heartbeat_at DESC")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanPgProcesses(rows)
+}
 
-	var processes []ProcessInfo
+func scanPgProcesses(rows *sql.Rows) ([]ProcessInfo, error) {
+	var list []ProcessInfo
 	for rows.Next() {
-		var info ProcessInfo
-		var queuesJSON string
-		if err := rows.Scan(&info.ProcessID, &info.Concurrency, &queuesJSON, &info.HeartbeatAt); err != nil {
+		var p ProcessInfo
+		var q string
+		if err := rows.Scan(&p.ProcessID, &p.Concurrency, &q, &p.HeartbeatAt, &p.MinConcurrency, &p.MaxConcurrency); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(queuesJSON), &info.Queues)
-		processes = append(processes, info)
+		_ = json.Unmarshal([]byte(q), &p.Queues)
+		list = append(list, p)
 	}
-	return processes, nil
+	return list, nil
 }
 
 func (p *PostgresStorage) LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error) {

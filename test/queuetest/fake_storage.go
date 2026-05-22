@@ -251,6 +251,7 @@ type FakeWorkerPoolStorage struct {
 	PurgeExpiredDLQFunc     func(ctx context.Context, ttl time.Duration) error
 	FailExpiredBatchesFunc  func(ctx context.Context) error
 	GetCronSchedulesFunc    func(ctx context.Context) ([]queue.CronJob, error)
+	GetStatsFunc            func(ctx context.Context) (*queue.Stats, error)
 }
 
 func (f *FakeWorkerPoolStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -377,4 +378,11 @@ func (f *FakeWorkerPoolStorage) GetCronSchedules(ctx context.Context) ([]queue.C
 		return f.GetCronSchedulesFunc(ctx)
 	}
 	return nil, nil
+}
+
+func (f *FakeWorkerPoolStorage) GetStats(ctx context.Context) (*queue.Stats, error) {
+	if f.GetStatsFunc != nil {
+		return f.GetStatsFunc(ctx)
+	}
+	return &queue.Stats{}, nil
 }

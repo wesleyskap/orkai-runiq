@@ -41,22 +41,27 @@ func WithRateLimit(limit int, period time.Duration) HandlerOption {
 
 // WorkerPool processes jobs concurrently from the storage backend.
 type WorkerPool struct {
-	firstQueues     []string
-	cronJobs        []CronJob
-	storage         WorkerPoolStorage
-	logger          Logger
-	tracer          Tracer
-	processID       string
-	registry        map[string]Job
-	configs         map[string]handlerConfig
-	weights         map[string]int
-	middlewares     []func(JobHandler) JobHandler
-	eventHandlers   map[EventType][]EventHandler
-	fetchCounter    uint64
-	concurrency     int
-	shutdownTimeout time.Duration
-	dlqTTL          time.Duration
-	activeWorkers   sync.WaitGroup
+	firstQueues        []string
+	monitoredQueues    []string
+	cronJobs           []CronJob
+	middlewares        []func(JobHandler) JobHandler
+	activeWorkers      sync.WaitGroup
+	storage            WorkerPoolStorage
+	logger             Logger
+	tracer             Tracer
+	processID          string
+	concurrencyMutex   sync.Mutex
+	autoscale          *DynamicConcurrencyConfig
+	sem                chan struct{}
+	registry           map[string]Job
+	configs            map[string]handlerConfig
+	weights            map[string]int
+	eventHandlers      map[EventType][]EventHandler
+	fetchCounter       uint64
+	concurrency        int
+	currentConcurrency int
+	shutdownTimeout    time.Duration
+	dlqTTL             time.Duration
 }
 
 func getWorkerProcessID() string {
@@ -165,12 +170,12 @@ func (w *WorkerPool) OnEvent(eventType EventType, h EventHandler) {
 
 // Start spawns workers and begins consuming from specified queues.
 func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
+	w.monitoredQueues = queues
+	w.setupSemaphore()
 	w.setupWeightedQueues(queues)
 	w.registerProcess(ctx, queues)
 	if len(w.cronJobs) > 0 {
-		if err := w.storage.RegisterCronJobs(ctx, w.cronJobs); err != nil {
-			w.logger.Error(ctx, "failed to register cron jobs", err)
-		}
+		_ = w.storage.RegisterCronJobs(ctx, w.cronJobs)
 	}
 	w.startBackgroundLoops(ctx, queues)
 	w.runProcessingLoop(ctx, queues)
@@ -196,11 +201,20 @@ func (w *WorkerPool) setupWeightedQueues(queues []string) {
 }
 
 func (w *WorkerPool) registerProcess(ctx context.Context, queues []string) {
+	conc := w.concurrency
+	var minC, maxC int
+	if w.autoscale != nil {
+		conc = w.getCurrentConcurrency()
+		minC = w.autoscale.MinConcurrency
+		maxC = w.autoscale.MaxConcurrency
+	}
 	info := &ProcessInfo{
-		Queues:      queues,
-		HeartbeatAt: time.Now(),
-		ProcessID:   w.processID,
-		Concurrency: w.concurrency,
+		Queues:         queues,
+		HeartbeatAt:    time.Now(),
+		ProcessID:      w.processID,
+		Concurrency:    conc,
+		MinConcurrency: minC,
+		MaxConcurrency: maxC,
 	}
 	if err := w.storage.RegisterProcess(ctx, info); err != nil {
 		w.logger.Error(ctx, "failed to register worker process", err, "process_id", w.processID)
@@ -215,6 +229,9 @@ func (w *WorkerPool) startBackgroundLoops(ctx context.Context, queues []string) 
 	go w.startScheduledPoller(ctx, queues)
 	go w.startDLQAutopurge(ctx)
 	go w.startBatchTimeoutWatcher(ctx)
+	if w.autoscale != nil {
+		go w.startAutoscaler(ctx)
+	}
 }
 
 func (w *WorkerPool) startDLQAutopurge(ctx context.Context) {
@@ -250,13 +267,12 @@ func (w *WorkerPool) triggerEvent(eventType EventType, env *JobEnvelope, err err
 }
 
 func (w *WorkerPool) runProcessingLoop(ctx context.Context, queues []string) {
-	sem := make(chan struct{}, w.concurrency)
 	for {
 		if err := ctx.Err(); err != nil {
 			w.gracefulWait()
 			return
 		}
-		w.acquireAndProcess(ctx, sem, queues)
+		w.acquireAndProcess(ctx, queues)
 	}
 }
 
@@ -274,28 +290,28 @@ func (w *WorkerPool) gracefulWait() {
 	}
 }
 
-func (w *WorkerPool) acquireAndProcess(ctx context.Context, sem chan struct{}, queues []string) {
+func (w *WorkerPool) acquireAndProcess(ctx context.Context, queues []string) {
 	select {
-	case sem <- struct{}{}:
-		w.fetchAndSpawn(ctx, sem, queues)
+	case w.sem <- struct{}{}:
+		w.fetchAndSpawn(ctx, queues)
 	case <-ctx.Done():
 	}
 }
 
-func (w *WorkerPool) fetchAndSpawn(ctx context.Context, sem chan struct{}, queues []string) {
+func (w *WorkerPool) fetchAndSpawn(ctx context.Context, queues []string) {
 	job, err := w.fetchNext(ctx, queues)
 	if err != nil || job == nil {
-		<-sem
+		<-w.sem
 		time.Sleep(100 * time.Millisecond)
 		return
 	}
 	w.activeWorkers.Add(1)
-	go w.runJobWithSemaphore(ctx, sem, job)
+	go w.runJobWithSemaphore(ctx, job)
 }
 
-func (w *WorkerPool) runJobWithSemaphore(ctx context.Context, sem chan struct{}, env *JobEnvelope) {
+func (w *WorkerPool) runJobWithSemaphore(ctx context.Context, env *JobEnvelope) {
 	defer func() {
-		<-sem
+		<-w.sem
 		w.activeWorkers.Done()
 	}()
 	w.executeJob(ctx, env)
@@ -552,7 +568,7 @@ func (w *WorkerPool) startHeartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = w.storage.HeartbeatProcess(ctx, w.processID)
+			w.registerProcess(ctx, w.monitoredQueues)
 		}
 	}
 }

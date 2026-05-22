@@ -13,11 +13,13 @@ func (s *SqliteStorage) RegisterProcess(ctx context.Context, info *ProcessInfo) 
 		return err
 	}
 	query := `
-		INSERT INTO runiq_processes (process_id, concurrency, queues, heartbeat_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO runiq_processes (process_id, concurrency, queues, heartbeat_at, min_concurrency, max_concurrency)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (process_id) DO UPDATE SET
-			concurrency = ?, queues = ?, heartbeat_at = ?`
-	_, err = s.db.ExecContext(ctx, query, info.ProcessID, info.Concurrency, string(queuesJSON), info.HeartbeatAt, info.Concurrency, string(queuesJSON), info.HeartbeatAt)
+			concurrency = ?, queues = ?, heartbeat_at = ?, min_concurrency = ?, max_concurrency = ?`
+	_, err = s.db.ExecContext(ctx, query,
+		info.ProcessID, info.Concurrency, string(queuesJSON), info.HeartbeatAt, info.MinConcurrency, info.MaxConcurrency,
+		info.Concurrency, string(queuesJSON), info.HeartbeatAt, info.MinConcurrency, info.MaxConcurrency)
 	return err
 }
 
@@ -28,26 +30,28 @@ func (s *SqliteStorage) HeartbeatProcess(ctx context.Context, processID string) 
 }
 
 func (s *SqliteStorage) GetActiveProcesses(ctx context.Context) ([]ProcessInfo, error) {
-	deadTimeLimit := time.Now().Add(-15 * time.Second)
-	_, _ = s.db.ExecContext(ctx, "DELETE FROM runiq_processes WHERE heartbeat_at < ?", deadTimeLimit)
-
-	rows, err := s.db.QueryContext(ctx, "SELECT process_id, concurrency, queues, heartbeat_at FROM runiq_processes ORDER BY heartbeat_at DESC")
+	dead := time.Now().Add(-15 * time.Second)
+	_, _ = s.db.ExecContext(ctx, "DELETE FROM runiq_processes WHERE heartbeat_at < ?", dead)
+	rows, err := s.db.QueryContext(ctx, "SELECT process_id, concurrency, queues, heartbeat_at, min_concurrency, max_concurrency FROM runiq_processes ORDER BY heartbeat_at DESC")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanProcesses(rows)
+}
 
-	var processes []ProcessInfo
+func scanProcesses(rows *sql.Rows) ([]ProcessInfo, error) {
+	var list []ProcessInfo
 	for rows.Next() {
-		var info ProcessInfo
-		var queuesJSON string
-		if err := rows.Scan(&info.ProcessID, &info.Concurrency, &queuesJSON, &info.HeartbeatAt); err != nil {
+		var p ProcessInfo
+		var q string
+		if err := rows.Scan(&p.ProcessID, &p.Concurrency, &q, &p.HeartbeatAt, &p.MinConcurrency, &p.MaxConcurrency); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(queuesJSON), &info.Queues)
-		processes = append(processes, info)
+		_ = json.Unmarshal([]byte(q), &p.Queues)
+		list = append(list, p)
 	}
-	return processes, nil
+	return list, nil
 }
 
 func (s *SqliteStorage) LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error) {

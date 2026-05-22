@@ -183,7 +183,9 @@ func createSqliteTables(ctx context.Context, db *sql.DB) error {
 		process_id TEXT PRIMARY KEY,
 		concurrency INTEGER NOT NULL,
 		queues TEXT NOT NULL,
-		heartbeat_at DATETIME NOT NULL
+		heartbeat_at DATETIME NOT NULL,
+		min_concurrency INTEGER NOT NULL DEFAULT 0,
+		max_concurrency INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS runiq_cron_locks (
@@ -264,5 +266,7 @@ func runSqliteMigrations(ctx context.Context, db *sql.DB) {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`)
+	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_processes ADD COLUMN min_concurrency INTEGER NOT NULL DEFAULT 0")
+	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_processes ADD COLUMN max_concurrency INTEGER NOT NULL DEFAULT 0")
 }
 
