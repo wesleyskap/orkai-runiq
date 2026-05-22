@@ -45,22 +45,27 @@ func (r *RedisStorage) Ack(ctx context.Context, jobID string) error {
 	if err := json.Unmarshal([]byte(data), &env); err != nil {
 		return err
 	}
+	if err := r.performAck(ctx, &env); err != nil {
+		return err
+	}
+	return r.resolveDependencies(ctx, jobID)
+}
+
+func (r *RedisStorage) performAck(ctx context.Context, env *JobEnvelope) error {
 	pipe := r.client.Pipeline()
-	pipe.SRem(ctx, "runiq:active:"+env.Queue, jobID)
-	pipe.LPush(ctx, "runiq:processed:"+env.Queue, jobID)
+	pipe.SRem(ctx, "runiq:active:"+env.Queue, env.JobID)
+	pipe.LPush(ctx, "runiq:processed:"+env.Queue, env.JobID)
 	pipe.LTrim(ctx, "runiq:processed:"+env.Queue, 0, 49)
 	if env.UniqueKey != "" {
 		pipe.Del(ctx, "runiq:unique:"+env.Queue+":"+env.UniqueKey)
 	}
-	_, err = pipe.Exec(ctx)
+	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return err
 	}
-
 	if env.BatchID != "" {
 		r.handleBatchAck(ctx, env.BatchID)
 	}
-
 	return nil
 }
 
@@ -81,21 +86,32 @@ func (r *RedisStorage) Fail(ctx context.Context, jobID string, runErr error) err
 }
 
 func (r *RedisStorage) processFail(ctx context.Context, env *JobEnvelope, runErr error) error {
+	pipe := r.client.Pipeline()
+	pipe.SRem(ctx, "runiq:active:"+env.Queue, env.JobID)
+	isDead := r.prepareFailStep(ctx, pipe, env, runErr)
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return err
+	}
+	if isDead {
+		return r.cascadeDependencyFailure(ctx, env.JobID)
+	}
+	return nil
+}
+
+func (r *RedisStorage) prepareFailStep(ctx context.Context, pipe redis.Pipeliner, env *JobEnvelope, runErr error) bool {
 	maxAttempts := env.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
-	pipe := r.client.Pipeline()
-	pipe.SRem(ctx, "runiq:active:"+env.Queue, env.JobID)
 	if env.Attempts < maxAttempts {
 		nextRun := time.Now().Add(computeBackoffDelay(env.Attempts - 1))
 		env.RunAt = &nextRun
 		r.rescheduleJob(ctx, pipe, env)
-	} else {
-		r.handleDeadJob(ctx, pipe, env, runErr)
+		return false
 	}
-	_, err := pipe.Exec(ctx)
-	return err
+	r.handleDeadJob(ctx, pipe, env, runErr)
+	return true
 }
 
 func (r *RedisStorage) rescheduleJob(ctx context.Context, pipe redis.Pipeliner, env *JobEnvelope) {
@@ -167,7 +183,10 @@ func (r *RedisStorage) Cancel(ctx context.Context, jobID string) error {
 	if err := json.Unmarshal([]byte(val), &env); err != nil {
 		return err
 	}
-	return r.executeCancelTx(ctx, &env)
+	if err := r.executeCancelTx(ctx, &env); err != nil {
+		return err
+	}
+	return r.cascadeDependencyFailure(ctx, jobID)
 }
 
 func (r *RedisStorage) executeCancelTx(ctx context.Context, env *JobEnvelope) error {

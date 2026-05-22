@@ -22,3 +22,18 @@ func computeBackoffDelay(attempts int) time.Duration {
 	jitterSec := time.Now().Nanosecond() % 3
 	return time.Duration(delaySec+jitterSec) * time.Second
 }
+
+func getRunAt(t *time.Time) time.Time {
+	if t != nil {
+		return *t
+	}
+	return time.Now()
+}
+
+func getMaxAttempts(max int) int {
+	if max <= 0 {
+		return 3
+	}
+	return max
+}
+

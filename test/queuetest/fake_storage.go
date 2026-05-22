@@ -13,10 +13,18 @@ type FakeClientStorage struct {
 	DequeueFunc        func(ctx context.Context, queueName string) (*queue.JobEnvelope, error)
 	AckFunc            func(ctx context.Context, jobID string) error
 	FailFunc           func(ctx context.Context, jobID string, err error) error
-	CreateBatchFunc    func(ctx context.Context, batchID string, callback *queue.JobEnvelope) error
-	EnqueueInBatchFunc func(ctx context.Context, batchID string, env *queue.JobEnvelope) error
-	SubmitBatchFunc    func(ctx context.Context, batchID string) error
-	PingFunc           func(ctx context.Context) error
+	CreateBatchFunc     func(ctx context.Context, batchID string, callback *queue.JobEnvelope) error
+	EnqueueInBatchFunc  func(ctx context.Context, batchID string, env *queue.JobEnvelope) error
+	SubmitBatchFunc     func(ctx context.Context, batchID string) error
+	EnqueueWorkflowFunc func(ctx context.Context, jobs ...*queue.JobEnvelope) error
+	PingFunc            func(ctx context.Context) error
+}
+
+func (f *FakeClientStorage) EnqueueWorkflow(ctx context.Context, jobs ...*queue.JobEnvelope) error {
+	if f.EnqueueWorkflowFunc != nil {
+		return f.EnqueueWorkflowFunc(ctx, jobs...)
+	}
+	return nil
 }
 
 func (f *FakeClientStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {

@@ -95,4 +95,40 @@ func (c *Client) EnqueueUnique(ctx context.Context, queueName, name string, args
 	return c.storage.Enqueue(ctx, env)
 }
 
+// NewJob instantiates a JobEnvelope with a pre-generated ID.
+// Usage example:
+//	job := queue.NewJob("default", "UploadData", payload)
+func NewJob(queueName, name string, args []byte) *JobEnvelope {
+	return &JobEnvelope{
+		JobID:       generateJobID(),
+		Queue:       queueName,
+		Name:        name,
+		Args:        args,
+		MaxAttempts: 3,
+	}
+}
+
+// DependsOn adds parentJobID dependencies to the job.
+// Usage example:
+//	child.DependsOn(parent)
+func (env *JobEnvelope) DependsOn(parent *JobEnvelope) {
+	if parent != nil && parent.JobID != "" {
+		env.Dependencies = append(env.Dependencies, parent.JobID)
+	}
+}
+
+// EnqueueWorkflow enqueues multiple dependent jobs transactionally.
+// Usage example:
+//	err := client.EnqueueWorkflow(ctx, jobA, jobB)
+func (c *Client) EnqueueWorkflow(ctx context.Context, jobs ...*JobEnvelope) error {
+	for _, job := range jobs {
+		traceID, spanID := c.tracer.ExtractTrace(ctx)
+		if job.TraceContext.TraceID == "" {
+			job.TraceContext.TraceID = traceID
+			job.TraceContext.SpanID = spanID
+		}
+	}
+	return c.storage.EnqueueWorkflow(ctx, jobs...)
+}
+
 

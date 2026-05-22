@@ -82,6 +82,9 @@ func (s *SqliteStorage) performAck(ctx context.Context, tx *sql.Tx, jobID, queue
 	if err := s.deleteUniqueLock(ctx, tx, queueName, uniqueKey); err != nil {
 		return err
 	}
+	if err := s.resolveDependencies(ctx, tx, jobID); err != nil {
+		return err
+	}
 	if batchID != "" {
 		return s.handleBatchAck(ctx, tx, batchID)
 	}
@@ -124,14 +127,14 @@ func (s *SqliteStorage) performFail(ctx context.Context, tx *sql.Tx, jobID, errM
 }
 
 func (s *SqliteStorage) transitionToDead(ctx context.Context, tx *sql.Tx, jobID, errMsg, uniqueKey, queueName, batchID string) error {
-	query := `
-		UPDATE runiq_jobs
-		SET status = 'dead', error_message = ?, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
-		WHERE job_id = ?`
+	query := "UPDATE runiq_jobs SET status = 'dead', error_message = ?, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?"
 	if _, err := tx.ExecContext(ctx, query, errMsg, jobID); err != nil {
 		return err
 	}
 	if err := s.deleteUniqueLock(ctx, tx, queueName, uniqueKey); err != nil {
+		return err
+	}
+	if err := s.cascadeDependencyFailure(ctx, tx, jobID); err != nil {
 		return err
 	}
 	if batchID != "" {
@@ -152,10 +155,7 @@ func (s *SqliteStorage) Retry(ctx context.Context, jobID string) error {
 
 func (s *SqliteStorage) Cancel(ctx context.Context, jobID string) error {
 	var uniqueKey, queueName string
-	err := s.db.QueryRowContext(ctx, "SELECT unique_key, queue FROM runiq_jobs WHERE job_id = ?", jobID).Scan(&uniqueKey, &queueName)
-	if err != nil && err != sql.ErrNoRows {
-		return err
-	}
+	_ = s.db.QueryRowContext(ctx, "SELECT unique_key, queue FROM runiq_jobs WHERE job_id = ?", jobID).Scan(&uniqueKey, &queueName)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -165,6 +165,9 @@ func (s *SqliteStorage) Cancel(ctx context.Context, jobID string) error {
 		return err
 	}
 	if err := s.deleteUniqueLock(ctx, tx, queueName, uniqueKey); err != nil {
+		return err
+	}
+	if err := s.cascadeDependencyFailure(ctx, tx, jobID); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -221,6 +221,13 @@ func createSqliteTables(ctx context.Context, db *sql.DB) error {
 		payload TEXT NOT NULL,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS runiq_job_dependencies (
+		job_id TEXT NOT NULL,
+		parent_job_id TEXT NOT NULL,
+		PRIMARY KEY (job_id, parent_job_id),
+		FOREIGN KEY (job_id) REFERENCES runiq_jobs(job_id) ON DELETE CASCADE
+	);
 	`
 	_, err := db.ExecContext(ctx, schema)
 	return err

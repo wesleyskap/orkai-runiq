@@ -132,6 +132,11 @@ func (f *FakeStorage) SubmitBatch(ctx context.Context, batchID string) error {
 	return nil
 }
 
+func (f *FakeStorage) EnqueueWorkflow(ctx context.Context, jobs ...*queue.JobEnvelope) error {
+	f.Enqueued = append(f.Enqueued, jobs...)
+	return nil
+}
+
 func (f *FakeStorage) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
 	if f.PausedQueues == nil {
 		return false, nil

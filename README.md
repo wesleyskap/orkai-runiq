@@ -341,6 +341,34 @@ if err != nil {
 - **Fail-Fast Failure Isolation**: If any job in the batch fails permanently (i.e. is sent to the Dead Letter Queue after exhausting its retries), the batch status transitions to `'failed'` immediately, preventing the callback from ever running.
 - **Atomic Backend Storage**: Implemented with native transactions in PostgreSQL (using `FOR UPDATE` and count tracking) and pipeline operations in Redis (using hashes and sets).
 
+## Job Dependencies (DAGs)
+
+Runiq supports complex task dependency orchestration using Directed Acyclic Graphs (DAGs). This allows you to construct execution chains where a child job will only execute after all its prerequisite parent jobs have completed successfully.
+
+### Usage Pattern
+1. **Define Jobs**: Create envelopes for your tasks using `queue.NewJob`.
+2. **Register Dependencies**: Declare parent/child relationships using `DependsOn()`.
+3. **Enqueue as Workflow**: Use `client.EnqueueWorkflow()` to schedule the entire dependency graph atomically.
+
+```go
+// 1. Define jobs
+jobA := queue.NewJob("default", "JobA", []byte("dataA"))
+jobB := queue.NewJob("default", "JobB", []byte("dataB"))
+jobC := queue.NewJob("default", "JobC", []byte("dataC"))
+
+// 2. Build the DAG (JobC depends on JobA and JobB)
+jobC.DependsOn(jobA)
+jobC.DependsOn(jobB)
+
+// 3. Enqueue the workflow transactionally
+err := client.EnqueueWorkflow(ctx, jobA, jobB, jobC)
+```
+
+### Downstream Cascading Lifecycle
+- **Dependency Resolution**: When a parent job completes successfully (`Ack`), the database resolves its child dependencies. Once a blocked child job has all its parent dependencies completed, it is automatically transitioned to `'pending'` and unlocked for processing.
+- **Fail-Fast Cascade**: If any parent task fails permanently (exhausts all retries and transitions to `'dead'`), Runiq automatically cascades the failure downstream, moving all child and grandchild jobs to the DLQ (`'dead'` state) with a descriptive dependency failure error message.
+- **Cascade Cancellation**: Cancelling a parent job (using `Cancel`) also recursively cancels all downstream child tasks.
+
 ## Dynamic Queue Pause & Resume
 
 Runiq supports dynamically pausing and resuming queue processing at runtime. This is highly useful during maintenance windows, downstream outages, or database pressure.

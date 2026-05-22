@@ -2,6 +2,14 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.7.0] - 2026-05-22
+
+### Added
+- **Job Dependencies (DAGs)**: Introduced Directed Acyclic Graph (DAG) task dependency tracking. Jobs can register prerequisites via `DependsOn` and are enqueued as workflows via `client.EnqueueWorkflow()`.
+- **Backend Storage Implementations**: Added transactional dependency tables and resolution logic on SQLite (`runiq_job_dependencies`), PostgreSQL (`runiq_job_dependencies`), and Redis (using dependency/dependent tracking sets).
+- **Downstream Cascading Lifecycle**: Automatically cascades failures and cancellations downstream to block or cancel child jobs recursively if a parent task transitions to `dead` or is cancelled.
+- **Workflow Verification Suite**: Integrated robust integration tests covering sequential execution, complex DAGs, cascading failure, and cascading cancellation.
+
 ## [2.6.0] - 2026-05-22
 
 ### Added

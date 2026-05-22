@@ -20,6 +20,7 @@ type TraceContext struct {
 type JobEnvelope struct {
 	TraceContext TraceContext  `json:"trace_context"`
 	Args         []byte        `json:"args"`
+	Dependencies []string      `json:"dependencies,omitempty"`
 	JobID        string        `json:"job_id"`
 	Queue        string        `json:"queue"`
 	Name         string        `json:"name"`
@@ -191,6 +192,12 @@ type BatchStorage interface {
 	SubmitBatch(ctx context.Context, batchID string) error
 }
 
+// WorkflowStorage defines workflow/DAG operations.
+type WorkflowStorage interface {
+	// EnqueueWorkflow enqueues a group of dependent jobs transactionally.
+	EnqueueWorkflow(ctx context.Context, jobs ...*JobEnvelope) error
+}
+
 // Pinger defines the health check operation.
 type Pinger interface {
 	Ping(ctx context.Context) error
@@ -213,6 +220,7 @@ type WorkerPoolStorage interface {
 type ClientStorage interface {
 	JobQueue
 	BatchStorage
+	WorkflowStorage
 	Pinger
 }
 
