@@ -501,7 +501,11 @@ func (w *WorkerPool) startCronScheduler(ctx context.Context) {
 }
 
 func (w *WorkerPool) processCronJobs(ctx context.Context, now time.Time) {
-	for _, cron := range w.cronJobs {
+	m := w.mergeCronJobs(ctx)
+	for _, cron := range m {
+		if cron.Paused {
+			continue
+		}
 		locNow := now
 		if cron.Location != nil {
 			locNow = now.In(cron.Location)
@@ -510,6 +514,34 @@ func (w *WorkerPool) processCronJobs(ctx context.Context, now time.Time) {
 			go w.enqueueCronJob(ctx, cron, now)
 		}
 	}
+}
+
+func (w *WorkerPool) mergeCronJobs(ctx context.Context) map[string]CronJob {
+	m := make(map[string]CronJob)
+	for _, c := range w.cronJobs {
+		m[c.Name] = c
+	}
+	dyn, err := w.storage.GetCronSchedules(ctx)
+	if err != nil {
+		return m
+	}
+	for _, c := range dyn {
+		if c.Timezone != "" {
+			c.Location = getCronLocation(c.Timezone)
+		}
+		m[c.Name] = c
+	}
+	return m
+}
+
+func getCronLocation(tz string) *time.Location {
+	if tz == "" {
+		return time.UTC
+	}
+	if loc, err := time.LoadLocation(tz); err == nil {
+		return loc
+	}
+	return time.UTC
 }
 
 func (w *WorkerPool) startHeartbeat(ctx context.Context) {

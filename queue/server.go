@@ -72,6 +72,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/jobs/bulk-retry", s.handleBulkRetry)
 	mux.HandleFunc("/api/jobs/bulk-cancel", s.handleBulkCancel)
 	mux.HandleFunc("/api/jobs/bulk-purge", s.handleBulkPurge)
+	mux.HandleFunc("/api/jobs/retry-modified", s.handleRetryModified)
+	mux.HandleFunc("/api/crons", s.handleCrons)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	sub, err := fs.Sub(assetsFS, "assets")
@@ -383,5 +385,88 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		writeQueueMetric(w, "runiq_jobs_count", q.Name, "processed", q.Processed)
 		writeQueuePausedMetric(w, q.Name, q.Paused)
 	}
+}
+
+type saveCronReq struct {
+	Name       string `json:"name"`
+	Expression string `json:"expression"`
+	Queue      string `json:"queue"`
+	Payload    string `json:"payload"`
+	Timezone   string `json:"timezone"`
+	Paused     bool   `json:"paused"`
+}
+
+func (s *Server) handleRetryModified(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	args, err := io.ReadAll(r.Body)
+	if id == "" || err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.RetryModified(r.Context(), id, args); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleCrons(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetCrons(w, r)
+	case http.MethodPost:
+		s.handleSaveCron(w, r)
+	case http.MethodDelete:
+		s.handleDeleteCron(w, r)
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleGetCrons(w http.ResponseWriter, r *http.Request) {
+	list, err := s.storage.GetCronSchedules(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(list)
+}
+
+func (s *Server) handleSaveCron(w http.ResponseWriter, r *http.Request) {
+	var req saveCronReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Timezone != "" {
+		if _, err := time.LoadLocation(req.Timezone); err != nil {
+			http.Error(w, "Invalid timezone location: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	cron := CronJob{Name: req.Name, Spec: req.Expression, Queue: req.Queue, Payload: []byte(req.Payload), Timezone: req.Timezone, Paused: req.Paused}
+	if err := s.storage.SaveCronSchedule(r.Context(), cron); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleDeleteCron(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "Missing name parameter", http.StatusBadRequest)
+		return
+	}
+	if err := s.storage.DeleteCronSchedule(r.Context(), name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 

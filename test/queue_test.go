@@ -25,6 +25,8 @@ type FakeStorage struct {
 	RateLimitToReturn    map[string]bool
 	Postponed            []string
 	PausedQueues         map[string]bool
+	ModifiedRetries      map[string][]byte
+	CronSchedules        []queue.CronJob
 }
 
 func (f *FakeStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -220,6 +222,40 @@ func (f *FakeStorage) BulkCancel(ctx context.Context, jobIDs []string) error {
 func (f *FakeStorage) BulkPurge(ctx context.Context, jobIDs []string) error {
 	_ = ctx
 	_ = jobIDs
+	return nil
+}
+
+func (f *FakeStorage) RetryModified(ctx context.Context, jobID string, args []byte) error {
+	if f.ModifiedRetries == nil {
+		f.ModifiedRetries = make(map[string][]byte)
+	}
+	f.ModifiedRetries[jobID] = args
+	return nil
+}
+
+func (f *FakeStorage) GetCronSchedules(ctx context.Context) ([]queue.CronJob, error) {
+	return f.CronSchedules, nil
+}
+
+func (f *FakeStorage) SaveCronSchedule(ctx context.Context, cron queue.CronJob) error {
+	for i, existing := range f.CronSchedules {
+		if existing.Name == cron.Name {
+			f.CronSchedules[i] = cron
+			return nil
+		}
+	}
+	f.CronSchedules = append(f.CronSchedules, cron)
+	return nil
+}
+
+func (f *FakeStorage) DeleteCronSchedule(ctx context.Context, name string) error {
+	var kept []queue.CronJob
+	for _, cron := range f.CronSchedules {
+		if cron.Name != name {
+			kept = append(kept, cron)
+		}
+	}
+	f.CronSchedules = kept
 	return nil
 }
 

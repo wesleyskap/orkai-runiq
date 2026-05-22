@@ -50,6 +50,10 @@ func (m *mockCronStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
 	return nil
 }
 
+func (m *mockCronStorage) GetCronSchedules(ctx context.Context) ([]CronJob, error) {
+	return nil, nil
+}
+
 func TestWorkerPoolCronScheduler_LockAcquired(t *testing.T) {
 	mock := &mockCronStorage{lockRes: true}
 	pool := NewWorkerPool(mock, 1)

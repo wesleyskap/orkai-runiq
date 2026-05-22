@@ -3,8 +3,6 @@ package queue
 import (
 	"context"
 	"encoding/json"
-
-	"github.com/redis/go-redis/v9"
 )
 
 type jobMeta struct {
@@ -31,17 +29,47 @@ func (r *RedisStorage) GetStats(ctx context.Context) (*Stats, error) {
 }
 
 func (r *RedisStorage) loadCronJobs(ctx context.Context, stats *Stats) error {
+	m := make(map[string]CronJobDetail)
+	r.loadStaticCrons(ctx, m)
+	r.loadDynamicCrons(ctx, m)
+	stats.CronJobs = sortCronJobs(m)
+	return nil
+}
+
+func (r *RedisStorage) loadStaticCrons(ctx context.Context, m map[string]CronJobDetail) {
 	allCrons, err := r.client.HVals(ctx, "runiq:cron_jobs").Result()
-	if err != nil && err != redis.Nil {
-		return err
+	if err != nil {
+		return
 	}
 	for _, data := range allCrons {
 		var cd CronJobDetail
 		if err := json.Unmarshal([]byte(data), &cd); err == nil {
-			stats.CronJobs = append(stats.CronJobs, cd)
+			cd.Source = "static"
+			m[cd.Name] = cd
 		}
 	}
-	return nil
+}
+
+func (r *RedisStorage) loadDynamicCrons(ctx context.Context, m map[string]CronJobDetail) {
+	allCrons, err := r.client.HVals(ctx, "runiq:cron_schedules").Result()
+	if err != nil {
+		return
+	}
+	for _, data := range allCrons {
+		var c CronJob
+		if err := json.Unmarshal([]byte(data), &c); err == nil {
+			cd := CronJobDetail{
+				Name:       c.Name,
+				Expression: c.Spec,
+				Queue:      c.Queue,
+				Payload:    string(c.Payload),
+				Timezone:   c.Timezone,
+				Source:     "dynamic",
+				Paused:     c.Paused,
+			}
+			m[cd.Name] = cd
+		}
+	}
 }
 
 func (r *RedisStorage) loadQueuesStats(ctx context.Context, stats *Stats, queues []string, allJobIDs *[]string, jobsMeta *[]jobMeta) error {

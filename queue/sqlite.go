@@ -224,6 +224,17 @@ func createSqliteTables(ctx context.Context, db *sql.DB) error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS runiq_cron_schedules (
+		name TEXT PRIMARY KEY,
+		spec TEXT NOT NULL,
+		queue TEXT NOT NULL,
+		payload BLOB NOT NULL,
+		timezone TEXT NOT NULL DEFAULT 'UTC',
+		paused INTEGER NOT NULL DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE TABLE IF NOT EXISTS runiq_job_dependencies (
 		job_id TEXT NOT NULL,
 		parent_job_id TEXT NOT NULL,
@@ -242,5 +253,16 @@ func createSqliteTables(ctx context.Context, db *sql.DB) error {
 func runSqliteMigrations(ctx context.Context, db *sql.DB) {
 	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_batches ADD COLUMN expires_at DATETIME")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_cron_jobs ADD COLUMN timezone TEXT DEFAULT 'UTC'")
+	_, _ = db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS runiq_cron_schedules (
+			name TEXT PRIMARY KEY,
+			spec TEXT NOT NULL,
+			queue TEXT NOT NULL,
+			payload BLOB NOT NULL,
+			timezone TEXT NOT NULL DEFAULT 'UTC',
+			paused INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`)
 }
 

@@ -218,21 +218,27 @@ Locks are automatically released when the job completes successfully (`Ack`), fa
 
 Runiq supports registering recurring background tasks using standard 5-field cron spec expressions (e.g., `*/15 * * * *`). To avoid duplicate job execution when running multiple replicas of the worker pool, Runiq acquires a distributed lock at the storage level.
 
-You can also specify a custom timezone location using `WithCronLocation`:
+Runiq supports two modes of Cron jobs:
+- **Static Crons**: Registered in Go code via `pool.RegisterCron(...)`. These are read-only and cannot be managed from the dashboard UI.
+- **Dynamic Crons**: Created, updated, paused/resumed, or deleted dynamically from the dashboard UI or via the `/api/crons` REST endpoints. These schedules are persisted to the configured storage backend (SQLite, PostgreSQL, or Redis).
+
+> [!IMPORTANT]
+> **Precedence & Overrides**: If a dynamic cron is created with the exact same name as a static cron, the dynamic cron takes precedence and overrides the static cron execution.
+
+You can also specify a custom timezone location when registering or saving crons:
 
 ```go
-// Register a cron job to run every day at midnight UTC
+// Register a static cron job to run every day at midnight UTC
 pool.RegisterCron("0 0 * * *", "default", "DailyReport", []byte(`{"format":"pdf"}`))
 
-// Register a cron job with a custom timezone location (e.g., America/New_York)
+// Register a static cron job with a custom timezone location (e.g., America/New_York)
 loc, _ := time.LoadLocation("America/New_York")
 pool.RegisterCron("0 9 * * 1-5", "default", "WeekdayMorningSync", []byte(`{}`), queue.WithCronLocation(loc))
 ```
 
-
 The background scheduler runs automatically inside the `WorkerPool`. At the start of each matched minute, it attempts to acquire a lock for that minute. Only one worker instance in the cluster will succeed and enqueue the task.
 
-All active registered cron schedules (including target queues and arguments) are saved in the storage backend and displayed in the **Cron Jobs** tab on the dashboard, making scheduled workloads fully visible.
+All active registered cron schedules (including target queues and arguments) are saved in the storage backend and displayed in the **Cron Jobs** tab on the dashboard, making scheduled workloads fully visible. You can create, edit, pause, and delete dynamic crons directly from this tab.
 
 ## Active Worker Pool Monitoring
 
@@ -284,7 +290,8 @@ When a job repeatedly fails and exhausts its configured `MaxAttempts` (defaultin
 
 The **Dashboard UI** provides a dedicated **Dead (DLQ)** tab to view dead jobs along with their error messages and stack traces. From there, administrators can:
 - **Inspect Arguments & Errors**: Click on any job row to open the **Job Details Modal** which shows raw JSON-formatted arguments and complete error backtraces, with a convenient button to copy the payload to the clipboard.
-- **Single Actions**: Choose to **Retry** a job immediately (which resets its attempts counter and places it back in the queue) or **Cancel** it permanently.
+- **Edit & Replay Payload**: Modify job arguments directly within the Job Details Modal interactive editor. Clicking **Retry with Modified Payload** enqueues a new execution of the job with the updated arguments (submitting a `POST` request to `/api/jobs/retry-modified?id=<job_id>`) and marks the original dead job as resolved.
+- **Single Actions**: Choose to **Retry** a job immediately with its original payload (which resets its attempts counter and places it back in the queue) or **Cancel** it permanently.
 - **Bulk Actions**: Perform batch management with the **Retry All** and **Purge All** buttons to clean or queue all failed jobs at once.
 
 ## Concurrency Throttling & Rate Limiting
@@ -410,7 +417,11 @@ Runiq's dashboard contains interactive buttons to manage tasks directly. The ser
 * **Get Jobs (Search & Pagination)**: `GET /api/jobs?q=<query>&status=<status>&page=<page>&limit=<limit>` searches and paginates jobs by ID, name, or trace ID under a specific status tab.
 * **Get Job Details**: `GET /api/jobs/detail?id=<job_id>` retrieves the raw details of a job, including raw arguments and full error logs.
 * **Retry Job**: `POST /api/jobs/retry?id=<job_id>` resets the attempts counter and schedules a failed job for immediate retry.
+* **Retry Job with Modified Payload**: `POST /api/jobs/retry-modified?id=<job_id>` resets the attempts counter, enqueues the job with the updated arguments supplied in the request body, and marks the original dead job as resolved.
 * **Cancel Job**: `POST /api/jobs/cancel?id=<job_id>` deletes a pending, scheduled, or failed job from the queue.
+* **List Dynamic Crons**: `GET /api/crons` retrieves all dynamically registered cron tasks.
+* **Save/Update Dynamic Cron**: `POST /api/crons` creates or updates a dynamic cron task. Expects a JSON payload like `{"name": "...", "expression": "...", "queue": "...", "payload": "...", "timezone": "...", "paused": false}`. The timezone name is validated using `time.LoadLocation`.
+* **Delete Dynamic Cron**: `DELETE /api/crons?name=<cron_name>` deletes the dynamic cron schedule.
 * **Bulk Retry Selected**: `POST /api/jobs/bulk-retry` takes a JSON body `{"ids": ["job1", "job2"]}` and retries the specified jobs.
 * **Bulk Cancel Selected**: `POST /api/jobs/bulk-cancel` takes a JSON body `{"ids": ["job1", "job2"]}` and cancels the specified jobs.
 * **Bulk Purge Selected**: `POST /api/jobs/bulk-purge` takes a JSON body `{"ids": ["job1", "job2"]}` and permanently deletes the specified jobs.

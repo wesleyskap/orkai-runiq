@@ -3,6 +3,7 @@ package queue
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"sort"
 	"time"
 )
 
@@ -36,4 +37,18 @@ func getMaxAttempts(max int) int {
 	}
 	return max
 }
+
+func sortCronJobs(m map[string]CronJobDetail) []CronJobDetail {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	res := make([]CronJobDetail, 0, len(names))
+	for _, name := range names {
+		res = append(res, m[name])
+	}
+	return res
+}
+
 

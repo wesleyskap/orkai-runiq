@@ -334,18 +334,41 @@ func (s *SqliteStorage) accumulateStats(stats *Stats, queueMap map[string]*Queue
 }
 
 func (s *SqliteStorage) fetchCronJobs(ctx context.Context, stats *Stats) error {
-	rows, err := s.db.QueryContext(ctx, "SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs ORDER BY name ASC")
+	m := make(map[string]CronJobDetail)
+	s.loadStaticCrons(ctx, m)
+	s.loadDynamicCrons(ctx, m)
+	stats.CronJobs = sortCronJobs(m)
+	return nil
+}
+
+func (s *SqliteStorage) loadStaticCrons(ctx context.Context, m map[string]CronJobDetail) {
+	rows, err := s.db.QueryContext(ctx, "SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs")
 	if err != nil {
-		return err
+		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var cd CronJobDetail
-		if err := rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload, &cd.Timezone); err == nil {
-			stats.CronJobs = append(stats.CronJobs, cd)
-		}
+		_ = rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload, &cd.Timezone)
+		cd.Source = "static"
+		m[cd.Name] = cd
 	}
-	return nil
+}
+
+func (s *SqliteStorage) loadDynamicCrons(ctx context.Context, m map[string]CronJobDetail) {
+	rows, err := s.db.QueryContext(ctx, "SELECT name, spec, queue, payload, timezone, paused FROM runiq_cron_schedules")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cd CronJobDetail
+		var paused int
+		_ = rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload, &cd.Timezone, &paused)
+		cd.Source = "dynamic"
+		cd.Paused = (paused != 0)
+		m[cd.Name] = cd
+	}
 }
 
 func (s *SqliteStorage) FailExpiredBatches(ctx context.Context) error {

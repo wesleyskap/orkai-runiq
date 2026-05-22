@@ -2,6 +2,13 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [2.9.0] - 2026-05-22
+
+### Added
+- **Dynamic Cron Manager**: Create, edit, pause/resume, and delete recurring tasks dynamically from the UI, persisting to SQLite, PostgreSQL, and Redis. Dynamic crons override static code-defined ones of the same name.
+- **DLQ Payload Editor & Replay**: Edit failed/dead job payloads directly from the Job Details modal and trigger immediate retries with the updated parameters.
+- **Timezone Validation on Save**: Validates that configured timezone names are valid locations in Go (`time.LoadLocation`) before committing them to the storage database/hash.
+
 ## [2.8.0] - 2026-05-22
 
 ### Added

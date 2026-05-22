@@ -78,6 +78,7 @@ function switchTab(tab) {
         btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
     });
     document.getElementById('dlq-bulk-actions').style.display = tab === 'dead' ? 'flex' : 'none';
+    document.getElementById('cron-actions').style.display = tab === 'cron' ? 'flex' : 'none';
     const bulkBar = document.getElementById('jobs-bulk-actions');
     if (bulkBar) bulkBar.style.display = 'none';
     renderTabContent();
@@ -157,12 +158,38 @@ function renderJobs() {
 
 function createCronRow(c) {
     const tr = document.createElement('tr');
+    const isPaused = !!c.paused;
+    const isDynamic = c.source === 'dynamic';
+    
+    const statusText = isPaused ? 'Paused' : 'Active';
+    const statusClass = isPaused 
+        ? 'background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); color: #fbbf24;' 
+        : 'background: rgba(52, 211, 153, 0.1); border: 1px solid rgba(52, 211, 153, 0.2); color: #34d399;';
+    const statusBadge = `<span class="badge" style="${statusClass} font-size: 0.75rem; padding: 0.15rem 0.4rem;">${statusText}</span>`;
+    
+    let actionsHtml = '';
+    if (isDynamic) {
+        const pauseResumeText = isPaused ? 'Resume' : 'Pause';
+        const pauseResumeClass = isPaused ? 'btn-primary' : 'btn-warning';
+        actionsHtml = `
+            <div class="actions-cell">
+                <button class="btn btn-primary" onclick="openEditCronModal('${encodeURIComponent(JSON.stringify(c))}')">Edit</button>
+                <button class="btn ${pauseResumeClass}" onclick="toggleCronPause('${encodeURIComponent(JSON.stringify(c))}')">${pauseResumeText}</button>
+                <button class="btn btn-danger" onclick="deleteCron('${c.name}')">Delete</button>
+            </div>
+        `;
+    } else {
+        actionsHtml = `<span style="color: var(--text-muted); font-size: 0.75rem; font-style: italic;">Static (Read-only)</span>`;
+    }
+    
     tr.innerHTML = `
-        <td></td>
         <td style="font-weight: 600; color: #a5b4fc;">${c.name}</td>
         <td style="font-family: monospace; font-size: 0.85rem; color: var(--pending);">${c.expression}</td>
         <td style="font-weight: 600;">${c.queue}</td>
         <td><code style="font-family: monospace; font-size: 0.85rem; background: rgba(0,0,0,0.2); padding: 0.15rem 0.3rem; border-radius: 4px;">${c.payload || '{}'}</code></td>
+        <td style="font-size: 0.9rem;">${c.timezone || 'UTC'}</td>
+        <td>${statusBadge}</td>
+        <td>${actionsHtml}</td>
     `;
     return tr;
 }
@@ -499,7 +526,25 @@ function populateModal(data) {
     document.getElementById('modal-span-id').innerText = data.trace_context?.span_id || 'N/A';
     document.getElementById('modal-unique-key').innerText = data.unique_key || 'N/A';
     document.getElementById('modal-batch-id').innerText = data.batch_id || 'N/A';
-    renderPayload(data.args);
+    
+    let formatted = '{}';
+    try {
+        const decoded = atob(data.args);
+        formatted = JSON.stringify(JSON.parse(decoded), null, 2);
+    } catch (err) {
+        formatted = data.args ? atob(data.args) : '{}';
+    }
+    document.getElementById('modal-payload').innerText = formatted;
+
+    const editSection = document.getElementById('modal-edit-payload-section');
+    if (editSection) {
+        if (activeTab === 'dead') {
+            editSection.style.display = 'block';
+            document.getElementById('modal-edit-payload').value = formatted;
+        } else {
+            editSection.style.display = 'none';
+        }
+    }
 }
 
 function renderPayload(args) {
@@ -566,6 +611,143 @@ function connectStatsStream() {
         stream.close();
         setTimeout(connectStatsStream, 3000);
     };
+}
+
+async function submitRetryModified() {
+    const jobId = document.getElementById('modal-job-id').innerText;
+    const newPayload = document.getElementById('modal-edit-payload').value;
+    try {
+        JSON.parse(newPayload);
+    } catch (err) {
+        alert('Invalid JSON payload: ' + err.message);
+        return;
+    }
+    try {
+        const res = await fetch(`/api/jobs/retry-modified?id=${jobId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: newPayload
+        });
+        if (!res.ok) {
+            const errMsg = await res.text();
+            throw new Error(errMsg || 'Failed to retry modified job');
+        }
+        closeJobDetailsModal();
+        fetchJobs();
+    } catch (err) {
+        alert(err.message);
+    }
+}
+
+function openNewCronModal() {
+    document.getElementById('cron-modal-title').innerText = 'Create Cron Job';
+    document.getElementById('cron-name').value = '';
+    document.getElementById('cron-name').disabled = false;
+    document.getElementById('cron-expression').value = '';
+    document.getElementById('cron-queue').value = 'default';
+    document.getElementById('cron-payload').value = '{}';
+    document.getElementById('cron-timezone').value = 'UTC';
+    document.getElementById('cron-modal').dataset.mode = 'create';
+    document.getElementById('cron-modal').dataset.paused = 'false';
+    document.getElementById('cron-modal').style.display = 'flex';
+}
+
+function openEditCronModal(cronJsonEncoded) {
+    const c = JSON.parse(decodeURIComponent(cronJsonEncoded));
+    document.getElementById('cron-modal-title').innerText = 'Edit Cron Job';
+    document.getElementById('cron-name').value = c.name;
+    document.getElementById('cron-name').disabled = true;
+    document.getElementById('cron-expression').value = c.expression;
+    document.getElementById('cron-queue').value = c.queue;
+    document.getElementById('cron-payload').value = c.payload;
+    document.getElementById('cron-timezone').value = c.timezone || 'UTC';
+    document.getElementById('cron-modal').dataset.mode = 'edit';
+    document.getElementById('cron-modal').dataset.paused = c.paused ? 'true' : 'false';
+    document.getElementById('cron-modal').style.display = 'flex';
+}
+
+function closeCronModal() {
+    document.getElementById('cron-modal').style.display = 'none';
+}
+
+async function saveCron(event) {
+    event.preventDefault();
+    const name = document.getElementById('cron-name').value.trim();
+    const expression = document.getElementById('cron-expression').value.trim();
+    const queue = document.getElementById('cron-queue').value.trim();
+    const payload = document.getElementById('cron-payload').value.trim();
+    const timezone = document.getElementById('cron-timezone').value.trim();
+    const isPaused = document.getElementById('cron-modal').dataset.paused === 'true';
+    try {
+        JSON.parse(payload);
+    } catch (err) {
+        alert('Invalid JSON payload: ' + err.message);
+        return;
+    }
+    try {
+        const res = await fetch('/api/crons', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                expression,
+                queue,
+                payload,
+                timezone,
+                paused: isPaused
+            })
+        });
+        if (!res.ok) {
+            const errMsg = await res.text();
+            throw new Error(errMsg || 'Failed to save cron job');
+        }
+        closeCronModal();
+        alert('Cron job saved successfully!');
+    } catch (err) {
+        alert(err.message);
+    }
+}
+
+async function toggleCronPause(cronJsonEncoded) {
+    const c = JSON.parse(decodeURIComponent(cronJsonEncoded));
+    const targetPausedStatus = !c.paused;
+    const actionLabel = targetPausedStatus ? 'pause' : 'resume';
+    if (!confirm(`Are you sure you want to ${actionLabel} cron job "${c.name}"?`)) return;
+    try {
+        const res = await fetch('/api/crons', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: c.name,
+                expression: c.expression,
+                queue: c.queue,
+                payload: c.payload,
+                timezone: c.timezone,
+                paused: targetPausedStatus
+            })
+        });
+        if (!res.ok) {
+            const errMsg = await res.text();
+            throw new Error(errMsg || 'Failed to toggle pause status');
+        }
+    } catch (err) {
+        alert(err.message);
+    }
+}
+
+async function deleteCron(name) {
+    if (!confirm(`Are you sure you want to delete dynamic cron job "${name}"?`)) return;
+    try {
+        const res = await fetch(`/api/crons?name=${encodeURIComponent(name)}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) {
+            const errMsg = await res.text();
+            throw new Error(errMsg || 'Failed to delete cron job');
+        }
+    } catch (err) {
+        alert(err.message);
+    }
 }
 
 // Initial pull and setup

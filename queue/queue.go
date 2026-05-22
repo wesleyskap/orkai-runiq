@@ -68,6 +68,8 @@ type CronJobDetail struct {
 	Queue      string `json:"queue"`
 	Payload    string `json:"payload"`
 	Timezone   string `json:"timezone,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Paused     bool   `json:"paused,omitempty"`
 }
 
 // Stats holds aggregate and queue-specific job counts.
@@ -216,6 +218,7 @@ type WorkerPoolStorage interface {
 	RegisterCronJobs(ctx context.Context, crons []CronJob) error
 	PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error
 	FailExpiredBatches(ctx context.Context) error
+	GetCronSchedules(ctx context.Context) ([]CronJob, error)
 }
 
 // ClientStorage is the storage interface required by Client.
@@ -236,6 +239,10 @@ type ServerStorage interface {
 	BulkRetry(ctx context.Context, jobIDs []string) error
 	BulkCancel(ctx context.Context, jobIDs []string) error
 	BulkPurge(ctx context.Context, jobIDs []string) error
+	RetryModified(ctx context.Context, jobID string, args []byte) error
+	GetCronSchedules(ctx context.Context) ([]CronJob, error)
+	SaveCronSchedule(ctx context.Context, cron CronJob) error
+	DeleteCronSchedule(ctx context.Context, name string) error
 }
 
 // CronJob represents a scheduled recurring task definition.
@@ -246,6 +253,7 @@ type CronJob struct {
 	Queue    string         `json:"queue"`
 	Timezone string         `json:"timezone,omitempty"`
 	Location *time.Location `json:"-"`
+	Paused   bool           `json:"paused,omitempty"`
 }
 
 // JobHandler defines the function signature for executing a job through middlewares.

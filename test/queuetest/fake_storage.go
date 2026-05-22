@@ -85,20 +85,24 @@ func (f *FakeClientStorage) Ping(ctx context.Context) error {
 
 // FakeServerStorage implements queue.ServerStorage.
 type FakeServerStorage struct {
-	GetStatsFunc       func(ctx context.Context) (*queue.Stats, error)
-	RetryFunc          func(ctx context.Context, jobID string) error
-	CancelFunc         func(ctx context.Context, jobID string) error
-	ClearQueueFunc     func(ctx context.Context, queueName string) error
-	PauseQueueFunc     func(ctx context.Context, queueName string) error
-	ResumeQueueFunc    func(ctx context.Context, queueName string) error
-	RetryAllFailedFunc func(ctx context.Context) error
-	PurgeAllFailedFunc func(ctx context.Context) error
-	PingFunc           func(ctx context.Context) error
-	GetJobDetailFunc   func(ctx context.Context, jobID string) (*queue.JobEnvelope, error)
-	GetJobsFunc        func(ctx context.Context, q, status string, page, limit int) ([]queue.JobDetail, int64, error)
-	BulkRetryFunc      func(ctx context.Context, jobIDs []string) error
-	BulkCancelFunc     func(ctx context.Context, jobIDs []string) error
-	BulkPurgeFunc      func(ctx context.Context, jobIDs []string) error
+	GetStatsFunc           func(ctx context.Context) (*queue.Stats, error)
+	RetryFunc              func(ctx context.Context, jobID string) error
+	CancelFunc             func(ctx context.Context, jobID string) error
+	ClearQueueFunc         func(ctx context.Context, queueName string) error
+	PauseQueueFunc         func(ctx context.Context, queueName string) error
+	ResumeQueueFunc        func(ctx context.Context, queueName string) error
+	RetryAllFailedFunc     func(ctx context.Context) error
+	PurgeAllFailedFunc     func(ctx context.Context) error
+	PingFunc               func(ctx context.Context) error
+	GetJobDetailFunc       func(ctx context.Context, jobID string) (*queue.JobEnvelope, error)
+	GetJobsFunc            func(ctx context.Context, q, status string, page, limit int) ([]queue.JobDetail, int64, error)
+	BulkRetryFunc          func(ctx context.Context, jobIDs []string) error
+	BulkCancelFunc         func(ctx context.Context, jobIDs []string) error
+	BulkPurgeFunc          func(ctx context.Context, jobIDs []string) error
+	RetryModifiedFunc      func(ctx context.Context, jobID string, args []byte) error
+	GetCronSchedulesFunc   func(ctx context.Context) ([]queue.CronJob, error)
+	SaveCronScheduleFunc   func(ctx context.Context, cron queue.CronJob) error
+	DeleteCronScheduleFunc func(ctx context.Context, name string) error
 }
 
 func (f *FakeServerStorage) GetStats(ctx context.Context) (*queue.Stats, error) {
@@ -199,6 +203,34 @@ func (f *FakeServerStorage) BulkPurge(ctx context.Context, jobIDs []string) erro
 	return nil
 }
 
+func (f *FakeServerStorage) RetryModified(ctx context.Context, jobID string, args []byte) error {
+	if f.RetryModifiedFunc != nil {
+		return f.RetryModifiedFunc(ctx, jobID, args)
+	}
+	return nil
+}
+
+func (f *FakeServerStorage) GetCronSchedules(ctx context.Context) ([]queue.CronJob, error) {
+	if f.GetCronSchedulesFunc != nil {
+		return f.GetCronSchedulesFunc(ctx)
+	}
+	return nil, nil
+}
+
+func (f *FakeServerStorage) SaveCronSchedule(ctx context.Context, cron queue.CronJob) error {
+	if f.SaveCronScheduleFunc != nil {
+		return f.SaveCronScheduleFunc(ctx, cron)
+	}
+	return nil
+}
+
+func (f *FakeServerStorage) DeleteCronSchedule(ctx context.Context, name string) error {
+	if f.DeleteCronScheduleFunc != nil {
+		return f.DeleteCronScheduleFunc(ctx, name)
+	}
+	return nil
+}
+
 // FakeWorkerPoolStorage implements queue.WorkerPoolStorage.
 type FakeWorkerPoolStorage struct {
 	EnqueueFunc             func(ctx context.Context, env *queue.JobEnvelope) error
@@ -218,6 +250,7 @@ type FakeWorkerPoolStorage struct {
 	RegisterCronJobsFunc    func(ctx context.Context, crons []queue.CronJob) error
 	PurgeExpiredDLQFunc     func(ctx context.Context, ttl time.Duration) error
 	FailExpiredBatchesFunc  func(ctx context.Context) error
+	GetCronSchedulesFunc    func(ctx context.Context) ([]queue.CronJob, error)
 }
 
 func (f *FakeWorkerPoolStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -337,4 +370,11 @@ func (f *FakeWorkerPoolStorage) FailExpiredBatches(ctx context.Context) error {
 		return f.FailExpiredBatchesFunc(ctx)
 	}
 	return nil
+}
+
+func (f *FakeWorkerPoolStorage) GetCronSchedules(ctx context.Context) ([]queue.CronJob, error) {
+	if f.GetCronSchedulesFunc != nil {
+		return f.GetCronSchedulesFunc(ctx)
+	}
+	return nil, nil
 }

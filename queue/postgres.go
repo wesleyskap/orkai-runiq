@@ -213,6 +213,17 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 		updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS runiq_cron_schedules (
+		name VARCHAR(255) PRIMARY KEY,
+		spec VARCHAR(255) NOT NULL,
+		queue VARCHAR(255) NOT NULL,
+		payload BYTEA NOT NULL,
+		timezone VARCHAR(50) NOT NULL DEFAULT 'UTC',
+		paused BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE TABLE IF NOT EXISTS runiq_job_dependencies (
 		job_id VARCHAR(255) NOT NULL,
 		parent_job_id VARCHAR(255) NOT NULL,
@@ -231,6 +242,17 @@ func createJobsTable(ctx context.Context, db *sql.DB) error {
 func runPostgresMigrations(ctx context.Context, db *sql.DB) {
 	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_batches ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE")
 	_, _ = db.ExecContext(ctx, "ALTER TABLE runiq_cron_jobs ADD COLUMN IF NOT EXISTS timezone VARCHAR(50) DEFAULT 'UTC'")
+	_, _ = db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS runiq_cron_schedules (
+			name VARCHAR(255) PRIMARY KEY,
+			spec VARCHAR(255) NOT NULL,
+			queue VARCHAR(255) NOT NULL,
+			payload BYTEA NOT NULL,
+			timezone VARCHAR(50) NOT NULL DEFAULT 'UTC',
+			paused BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		)`)
 }
 
 

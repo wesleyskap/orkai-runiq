@@ -340,18 +340,39 @@ func (p *PostgresStorage) accumulateStats(stats *Stats, queueMap map[string]*Que
 }
 
 func (p *PostgresStorage) fetchCronJobs(ctx context.Context, stats *Stats) error {
-	rows, err := p.db.QueryContext(ctx, "SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs ORDER BY name ASC")
+	m := make(map[string]CronJobDetail)
+	p.loadStaticCrons(ctx, m)
+	p.loadDynamicCrons(ctx, m)
+	stats.CronJobs = sortCronJobs(m)
+	return nil
+}
+
+func (p *PostgresStorage) loadStaticCrons(ctx context.Context, m map[string]CronJobDetail) {
+	rows, err := p.db.QueryContext(ctx, "SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs")
 	if err != nil {
-		return err
+		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var cd CronJobDetail
-		if err := rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload, &cd.Timezone); err == nil {
-			stats.CronJobs = append(stats.CronJobs, cd)
-		}
+		_ = rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload, &cd.Timezone)
+		cd.Source = "static"
+		m[cd.Name] = cd
 	}
-	return nil
+}
+
+func (p *PostgresStorage) loadDynamicCrons(ctx context.Context, m map[string]CronJobDetail) {
+	rows, err := p.db.QueryContext(ctx, "SELECT name, spec, queue, payload, timezone, paused FROM runiq_cron_schedules")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cd CronJobDetail
+		_ = rows.Scan(&cd.Name, &cd.Expression, &cd.Queue, &cd.Payload, &cd.Timezone, &cd.Paused)
+		cd.Source = "dynamic"
+		m[cd.Name] = cd
+	}
 }
 
 // FailExpiredBatches transitions expired batches to failed status.
