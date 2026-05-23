@@ -43,6 +43,15 @@ func WithCircuitBreaker(cfg CircuitBreakerConfig) ClientOption {
 	}
 }
 
+// WithNamespace configures a custom namespace prefix for the Client's storage.
+func WithNamespace(ns string) ClientOption {
+	return func(c *Client) {
+		if nsStore, ok := c.storage.(Namespacer); ok {
+			nsStore.SetNamespace(ns)
+		}
+	}
+}
+
 func (c *Client) execute(fn func() error) error {
 	if c.cb == nil {
 		return fn()

@@ -252,6 +252,9 @@ type FakeWorkerPoolStorage struct {
 	FailExpiredBatchesFunc  func(ctx context.Context) error
 	GetCronSchedulesFunc    func(ctx context.Context) ([]queue.CronJob, error)
 	GetStatsFunc            func(ctx context.Context) (*queue.Stats, error)
+	AcquireLeaderFunc       func(ctx context.Context, clientID string, ttl time.Duration) (bool, error)
+	ReleaseLeaderFunc       func(ctx context.Context, clientID string) error
+	ArchiveJobsFunc         func(ctx context.Context, age time.Duration) (int64, error)
 }
 
 func (f *FakeWorkerPoolStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
@@ -385,4 +388,25 @@ func (f *FakeWorkerPoolStorage) GetStats(ctx context.Context) (*queue.Stats, err
 		return f.GetStatsFunc(ctx)
 	}
 	return &queue.Stats{}, nil
+}
+
+func (f *FakeWorkerPoolStorage) AcquireLeader(ctx context.Context, clientID string, ttl time.Duration) (bool, error) {
+	if f.AcquireLeaderFunc != nil {
+		return f.AcquireLeaderFunc(ctx, clientID, ttl)
+	}
+	return true, nil
+}
+
+func (f *FakeWorkerPoolStorage) ReleaseLeader(ctx context.Context, clientID string) error {
+	if f.ReleaseLeaderFunc != nil {
+		return f.ReleaseLeaderFunc(ctx, clientID)
+	}
+	return nil
+}
+
+func (f *FakeWorkerPoolStorage) ArchiveJobs(ctx context.Context, age time.Duration) (int64, error) {
+	if f.ArchiveJobsFunc != nil {
+		return f.ArchiveJobsFunc(ctx, age)
+	}
+	return 0, nil
 }

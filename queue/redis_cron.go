@@ -8,7 +8,7 @@ import (
 
 // RetryModified resets a failed job back to pending state for re-execution with new args in Redis.
 func (r *RedisStorage) RetryModified(ctx context.Context, jobID string, args []byte) error {
-	val, err := r.client.HGet(ctx, "runiq:jobs", jobID).Result()
+	val, err := r.client.HGet(ctx, r.k("runiq:jobs"), jobID).Result()
 	if err != nil {
 		return err
 	}
@@ -24,7 +24,7 @@ func (r *RedisStorage) RetryModified(ctx context.Context, jobID string, args []b
 
 // GetCronSchedules retrieves dynamic cron schedules from Redis.
 func (r *RedisStorage) GetCronSchedules(ctx context.Context) ([]CronJob, error) {
-	m, err := r.client.HGetAll(ctx, "runiq:cron_schedules").Result()
+	m, err := r.client.HGetAll(ctx, r.k("runiq:cron_schedules")).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -47,10 +47,12 @@ func (r *RedisStorage) SaveCronSchedule(ctx context.Context, cron CronJob) error
 	if err != nil {
 		return err
 	}
-	return r.client.HSet(ctx, "runiq:cron_schedules", cron.Name, data).Err()
+	return r.client.HSet(ctx, r.k("runiq:cron_schedules"), cron.Name, data).Err()
 }
 
 // DeleteCronSchedule removes a dynamic cron schedule from Redis.
 func (r *RedisStorage) DeleteCronSchedule(ctx context.Context, name string) error {
-	return r.client.HDel(ctx, "runiq:cron_schedules", name).Err()
+	err := r.client.HDel(ctx, r.k("runiq:cron_schedules"), name).Err()
+	return err
 }
+

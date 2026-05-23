@@ -62,6 +62,10 @@ type WorkerPool struct {
 	currentConcurrency int
 	shutdownTimeout    time.Duration
 	dlqTTL             time.Duration
+	leaderTTL          time.Duration
+	archivalAge        time.Duration
+	archivalInterval   time.Duration
+	isLeader           int32
 }
 
 func getWorkerProcessID() string {
@@ -130,6 +134,21 @@ func WithDLQTTL(ttl time.Duration) WorkerOption {
 	}
 }
 
+// WithLeaderElection enables native leader election for background loops.
+func WithLeaderElection(ttl time.Duration) WorkerOption {
+	return func(w *WorkerPool) {
+		w.leaderTTL = ttl
+	}
+}
+
+// WithJobArchival enables periodic archival of old processed/dead jobs.
+func WithJobArchival(age, interval time.Duration) WorkerOption {
+	return func(w *WorkerPool) {
+		w.archivalAge = age
+		w.archivalInterval = interval
+	}
+}
+
 // Register maps a job name to a Job implementation with optional rate limiting/concurrency.
 func (w *WorkerPool) Register(name string, job Job, opts ...HandlerOption) {
 	w.registry[name] = job
@@ -170,6 +189,13 @@ func (w *WorkerPool) OnEvent(eventType EventType, h EventHandler) {
 
 // Start spawns workers and begins consuming from specified queues.
 func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
+	if w.leaderTTL > 0 {
+		defer func() {
+			ctxShut, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = w.storage.ReleaseLeader(ctxShut, w.processID)
+		}()
+	}
 	w.monitoredQueues = queues
 	w.setupSemaphore()
 	w.setupWeightedQueues(queues)
@@ -223,12 +249,18 @@ func (w *WorkerPool) registerProcess(ctx context.Context, queues []string) {
 
 func (w *WorkerPool) startBackgroundLoops(ctx context.Context, queues []string) {
 	go w.startHeartbeat(ctx)
+	if w.leaderTTL > 0 {
+		go w.startLeaderElector(ctx)
+	}
 	if len(w.cronJobs) > 0 {
 		go w.startCronScheduler(ctx)
 	}
 	go w.startScheduledPoller(ctx, queues)
 	go w.startDLQAutopurge(ctx)
 	go w.startBatchTimeoutWatcher(ctx)
+	if w.archivalAge > 0 && w.archivalInterval > 0 {
+		go w.startJobArchiver(ctx)
+	}
 	if w.autoscale != nil {
 		go w.startAutoscaler(ctx)
 	}
@@ -240,14 +272,20 @@ func (w *WorkerPool) startDLQAutopurge(ctx context.Context) {
 	}
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
-	_ = w.storage.PurgeExpiredDLQ(ctx, w.dlqTTL)
+	w.purgeDLQIfLeader(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = w.storage.PurgeExpiredDLQ(ctx, w.dlqTTL)
+			w.purgeDLQIfLeader(ctx)
 		}
+	}
+}
+
+func (w *WorkerPool) purgeDLQIfLeader(ctx context.Context) {
+	if w.checkLeader() {
+		_ = w.storage.PurgeExpiredDLQ(ctx, w.dlqTTL)
 	}
 }
 
@@ -507,10 +545,12 @@ func (w *WorkerPool) startCronScheduler(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			now := time.Now().UTC()
-			if now.Minute() != lastMinute {
-				lastMinute = now.Minute()
-				w.processCronJobs(ctx, now)
+			if w.checkLeader() {
+				now := time.Now().UTC()
+				if now.Minute() != lastMinute {
+					lastMinute = now.Minute()
+					w.processCronJobs(ctx, now)
+				}
 			}
 		}
 	}
@@ -581,24 +621,101 @@ func (w *WorkerPool) startScheduledPoller(ctx context.Context, queues []string) 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for _, q := range queues {
-				_ = w.storage.PollScheduled(ctx, q)
-			}
+			w.pollQueuesScheduled(ctx, queues)
 		}
+	}
+}
+
+func (w *WorkerPool) pollQueuesScheduled(ctx context.Context, queues []string) {
+	if !w.checkLeader() {
+		return
+	}
+	for _, q := range queues {
+		_ = w.storage.PollScheduled(ctx, q)
 	}
 }
 
 func (w *WorkerPool) startBatchTimeoutWatcher(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	_ = w.storage.FailExpiredBatches(ctx)
+	w.failExpiredBatchesIfLeader(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = w.storage.FailExpiredBatches(ctx)
+			w.failExpiredBatchesIfLeader(ctx)
 		}
+	}
+}
+
+func (w *WorkerPool) failExpiredBatchesIfLeader(ctx context.Context) {
+	if w.checkLeader() {
+		_ = w.storage.FailExpiredBatches(ctx)
+	}
+}
+
+func (w *WorkerPool) checkLeader() bool {
+	if w.leaderTTL <= 0 {
+		return true
+	}
+	return atomic.LoadInt32(&w.isLeader) == 1
+}
+
+func (w *WorkerPool) startLeaderElector(ctx context.Context) {
+	ticker := time.NewTicker(w.leaderTTL / 2)
+	defer ticker.Stop()
+	w.electLeader(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.electLeader(ctx)
+		}
+	}
+}
+
+func (w *WorkerPool) electLeader(ctx context.Context) {
+	ok, err := w.storage.AcquireLeader(ctx, w.processID, w.leaderTTL)
+	if err != nil {
+		w.logger.Error(ctx, "leader elector: failed to acquire/renew lease", err)
+		atomic.StoreInt32(&w.isLeader, 0)
+		return
+	}
+	if ok {
+		if atomic.CompareAndSwapInt32(&w.isLeader, 0, 1) {
+			w.logger.Info(ctx, "leader elector: successfully elected as leader", "process_id", w.processID)
+		}
+	} else {
+		if atomic.CompareAndSwapInt32(&w.isLeader, 1, 0) {
+			w.logger.Info(ctx, "leader elector: lost leader status", "process_id", w.processID)
+		}
+	}
+}
+
+func (w *WorkerPool) startJobArchiver(ctx context.Context) {
+	ticker := time.NewTicker(w.archivalInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.runArchival(ctx)
+		}
+	}
+}
+
+func (w *WorkerPool) runArchival(ctx context.Context) {
+	if !w.checkLeader() {
+		return
+	}
+	count, err := w.storage.ArchiveJobs(ctx, w.archivalAge)
+	if err != nil {
+		w.logger.Error(ctx, "job archiver failed", err)
+	} else if count > 0 {
+		w.logger.Info(ctx, "job archiver completed", "count", count)
 	}
 }
 

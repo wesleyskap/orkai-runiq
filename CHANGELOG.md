@@ -2,6 +2,14 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [3.0.0] - 2026-05-22
+
+### Added
+- **Storage Plugin System**: Dynamic storage backend registration enabling decoupled registration and initialization of drivers via `RegisterStorageDriver` and `OpenStorage`.
+- **Multi-Tenant Namespaces**: Partitioning support to isolate keys and tables under separate prefixes (`WithNamespace` and `WithServerNamespace`), allowing multi-tenant segregation.
+- **Native Leader Election (High Availability)**: Distributed leader election via database/Redis lease locks (`WithLeaderElection`), ensuring background loops run only on a single master node.
+- **Job Archival / Cold Storage**: Built-in archival background manager (`WithJobArchival`) to move processed/dead jobs older than $N$ days to secondary archival tables/keys.
+
 ## [2.10.0] - 2026-05-22
 
 ### Added

@@ -2,7 +2,7 @@
 
 Orkai Runiq is a background job processor in Go. It is designed to be standalone with zero hard dependencies, while offering optional, interface-driven integration with telemetry and logging engines such as orkai-observability.
 
-![Orkai Runiq Dashboard](queue/assets/orkai-runiq-dashboard-2.4.0.png)
+![Orkai Runiq Dashboard](queue/assets/orkai-runiq-dashboard-3.0.0.png)
 
 ## Project Structure
 
@@ -447,6 +447,85 @@ pool := queue.NewWorkerPool(storage, 2, queue.WithDynamicConcurrency(cfg))
 
 - **Safe Concurrency Adjustments**: The `WorkerPool` scales concurrency dynamically by resizing an internal semaphore channel. This ensures that adjusting worker goroutines is lock-free and occurs without interrupting already executing jobs.
 - **Heartbeat & Registry integration**: Autoscaling pools periodically update their current concurrency metrics to the database process registry. The Runiq dashboard renders this dynamic concurrency range alongside the active worker count in real time.
+## High Availability & Scalability
+
+Introduces high-availability, multi-tenant and scalability features designed to partition and clean data, register external storage engines, and safely coordinate tasks in clustered environments.
+
+### Storage Plugin System
+
+Runiq exposes a plugin system that allows you to dynamically register custom storage drivers. This keeps the core queue registry decoupled from the specific driver implementations.
+
+To register and initialize a storage driver:
+```go
+// Register a custom storage driver factory
+queue.RegisterStorageDriver("my_custom_db", func(conn interface{}) (interface{}, error) {
+	dbConn := conn.(*MyDbConn)
+	return NewCustomStorage(dbConn), nil
+})
+
+// Dynamically open a registered storage engine
+storage, err := queue.OpenStorage("my_custom_db", dbConn)
+```
+
+All built-in backends (`sqlite`, `postgres`, `redis`) automatically register themselves on initialization, meaning you can initialize them dynamically:
+```go
+// Connect to SQLite dynamically
+store, err := queue.OpenStorage("sqlite", sqlDB)
+```
+
+### Multi-Tenant Namespaces
+
+To support multi-tenancy, Runiq allows segmenting database tables and keys under isolated namespaces. This prevents cross-tenant data leakage and separates workloads cleanly.
+
+To configure a namespace prefix, use the `WithNamespace` option on the Client and WorkerPool, or the `WithServerNamespace` option on the Dashboard Server:
+```go
+// Initialize a client isolated under tenant-A's prefix
+client := queue.NewClient(storage, queue.WithNamespace("tenant_a"))
+
+// Start a worker pool polling tenant-A's isolated tables/keys
+pool := queue.NewWorkerPool(storage, 5, queue.WithNamespace("tenant_a"))
+
+// Serve a dashboard showing only tenant-A's workloads
+server := queue.NewServer(storage, ":8080", queue.WithServerNamespace("tenant_a"))
+```
+
+- **SQLite & PostgreSQL**: Table names are prefixed as `<namespace>_<tablename>` (e.g. `tenant_a_jobs`). Schema migrations and dynamic tables for the namespace are initialized automatically on worker startup.
+- **Redis**: Keys are prefixed as `<namespace>:<keyname>` (e.g. `tenant_a:jobs`).
+
+### Native Leader Election (High Availability)
+
+When running multiple replicas of the worker pool in a cluster, background loops (such as scheduled pollers, cron managers, DLQ purges, and batch timeout watchers) should run on only one instance at a time to prevent redundant database load and duplicate work.
+
+Runiq coordinates these tasks using a distributed database/Redis lease key. To enable leader election, pass the `WithLeaderElection` option:
+```go
+pool := queue.NewWorkerPool(
+	storage, 
+	5,
+	queue.WithLeaderElection(30 * time.Second), // Acquire/renew leader lease with 30s TTL
+)
+```
+
+- **Lease Renewal**: The leader instance automatically renews the lease in the background every `TTL / 2`.
+- **Automatic Failover**: If the current leader goes offline or fails to renew the lease, another replica automatically acquires leadership after the lease TTL expires.
+- **Dashboard Status**: An active leader process displays a green **Leader** badge under the **Active Processes** tab on the dashboard.
+
+### Job Archival & Cold Storage
+
+To keep core index tables slim and high-performance, Runiq includes an archival manager. It periodically moves completed (`processed`) or permanently failed (`dead`) jobs older than a specified duration into secondary cold storage.
+
+To configure the archival loop on the `WorkerPool`:
+```go
+pool := queue.NewWorkerPool(
+	storage,
+	5,
+	queue.WithJobArchival(
+		7 * 24 * time.Hour,  // Archive jobs older than 7 days
+		1 * time.Hour,       // Run the archival cleanup loop every 1 hour
+	),
+)
+```
+
+- **Archived Storage**: Archived SQL rows are relocated to `runiq_archived_jobs`, while archived Redis jobs are moved to cold keys. This ensures search operations and active queues stay extremely fast.
 
 ## Dynamic Queue Pause & Resume
 
@@ -799,34 +878,125 @@ Expected output:
 --- PASS: TestComputeBackoffDelay_Exponential (0.00s)
 === RUN   TestComputeBackoffDelay_NonNegative
 --- PASS: TestComputeBackoffDelay_NonNegative (0.00s)
+=== RUN   TestCB_Trips
+--- PASS: TestCB_Trips (0.00s)
+=== RUN   TestCB_Recovery
+--- PASS: TestCB_Recovery (0.10s)
+=== RUN   TestCB_Latency
+--- PASS: TestCB_Latency (0.04s)
+=== RUN   TestAutoscale_ScaleUp
+--- PASS: TestAutoscale_ScaleUp (0.00s)
+=== RUN   TestAutoscale_ScaleDown
+--- PASS: TestAutoscale_ScaleDown (0.00s)
 === RUN   TestWorkerPoolWeightedRotation
 --- PASS: TestWorkerPoolWeightedRotation (0.00s)
 === RUN   TestWorkerPoolStrictPriorityFallback
 --- PASS: TestWorkerPoolStrictPriorityFallback (0.00s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/v2/queue	0.392s
+ok  	github.com/wesleyskap/orkai-runiq/v2/queue	0.591s
 === RUN   TestClientBatchCreation
 --- PASS: TestClientBatchCreation (0.00s)
 === RUN   TestPostgresBatchFlow
---- PASS: TestPostgresBatchFlow (0.19s)
+    batch_test.go:88: skipping postgres batch tests, service unreachable
+--- SKIP: TestPostgresBatchFlow (0.01s)
 === RUN   TestRedisBatchFlow
 --- PASS: TestRedisBatchFlow (0.17s)
 === RUN   TestBatchFailureDoesNotTriggerCallback
---- PASS: TestBatchFailureDoesNotTriggerCallback (0.52s)
+--- PASS: TestBatchFailureDoesNotTriggerCallback (0.51s)
+=== RUN   TestDashboardGetJobs
+--- PASS: TestDashboardGetJobs (0.00s)
+=== RUN   TestDashboardBulkRetry
+--- PASS: TestDashboardBulkRetry (0.00s)
+=== RUN   TestDashboardBulkCancel
+--- PASS: TestDashboardBulkCancel (0.00s)
+=== RUN   TestDashboardBulkPurge
+--- PASS: TestDashboardBulkPurge (0.00s)
+=== RUN   TestDashboardStatsStream
+--- PASS: TestDashboardStatsStream (1.00s)
+=== RUN   TestDashboardMetrics
+--- PASS: TestDashboardMetrics (0.00s)
+=== RUN   TestDashboardRetryModified
+--- PASS: TestDashboardRetryModified (0.00s)
+=== RUN   TestDashboardGetCronSchedules
+--- PASS: TestDashboardGetCronSchedules (0.00s)
+=== RUN   TestDashboardSaveCronSchedule
+--- PASS: TestDashboardSaveCronSchedule (0.00s)
+=== RUN   TestDashboardSaveCronInvalidTimezone
+--- PASS: TestDashboardSaveCronInvalidTimezone (0.00s)
+=== RUN   TestDashboardDeleteCronSchedule
+--- PASS: TestDashboardDeleteCronSchedule (0.00s)
 === RUN   TestJobEnvelopeSerialization
 --- PASS: TestJobEnvelopeSerialization (0.00s)
 === RUN   TestJobInterfaceConformance
 --- PASS: TestJobInterfaceConformance (0.00s)
+=== RUN   TestWorkerPoolMiddleware
+--- PASS: TestWorkerPoolMiddleware (0.10s)
+=== RUN   TestEventCompleted
+--- PASS: TestEventCompleted (0.10s)
+=== RUN   TestEventFailed
+--- PASS: TestEventFailed (0.10s)
+=== RUN   TestEventDead
+--- PASS: TestEventDead (0.10s)
+=== RUN   TestSqliteDLQPurge
+--- PASS: TestSqliteDLQPurge (0.00s)
+=== RUN   TestPostgresDLQPurge
+    resilience_observability_test.go:147: skipping postgres storage tests, service unreachable
+--- SKIP: TestPostgresDLQPurge (0.00s)
+=== RUN   TestRedisDLQPurge
+--- PASS: TestRedisDLQPurge (0.01s)
+=== RUN   TestDashboardBasicAuth
+--- PASS: TestDashboardBasicAuth (0.00s)
+=== RUN   TestStoragePluginSystem
+--- PASS: TestStoragePluginSystem (0.00s)
+=== RUN   TestLeaderElectionSqlite
+--- PASS: TestLeaderElectionSqlite (0.12s)
+=== RUN   TestNamespacesSqlite
+--- PASS: TestNamespacesSqlite (0.00s)
+=== RUN   TestArchivalSqlite
+--- PASS: TestArchivalSqlite (0.00s)
+=== RUN   TestLeaderElectionPostgres
+    scalability_test.go:68: skipping postgres, ping failed
+--- SKIP: TestLeaderElectionPostgres (0.00s)
+=== RUN   TestNamespacesPostgres
+    scalability_test.go:84: skipping postgres, ping failed
+--- SKIP: TestNamespacesPostgres (0.00s)
+=== RUN   TestArchivalPostgres
+    scalability_test.go:100: skipping postgres, ping failed
+--- SKIP: TestArchivalPostgres (0.00s)
+=== RUN   TestLeaderElectionRedis
+--- PASS: TestLeaderElectionRedis (0.13s)
+=== RUN   TestNamespacesRedis
+--- PASS: TestNamespacesRedis (0.01s)
+=== RUN   TestArchivalRedis
+--- PASS: TestArchivalRedis (0.01s)
+=== RUN   TestEnqueueWithDelay
+--- PASS: TestEnqueueWithDelay (0.00s)
+=== RUN   TestBatchTimeoutSqlite
+--- PASS: TestBatchTimeoutSqlite (0.10s)
+=== RUN   TestCronTimezoneSqlite
+--- PASS: TestCronTimezoneSqlite (0.10s)
+=== RUN   TestBatchTimeoutRedis
+--- PASS: TestBatchTimeoutRedis (0.11s)
+=== RUN   TestCronTimezoneRedis
+--- PASS: TestCronTimezoneRedis (0.11s)
 === RUN   TestDashboardStatsEndpoint
 --- PASS: TestDashboardStatsEndpoint (0.00s)
 === RUN   TestDashboardUIEndpoint
---- PASS: TestDashboardUIEndpoint (0.03s)
+--- PASS: TestDashboardUIEndpoint (0.04s)
 === RUN   TestAdminEndpoints
 --- PASS: TestAdminEndpoints (0.00s)
 === RUN   TestDashboardWithMiddleware
 --- PASS: TestDashboardWithMiddleware (0.00s)
 === RUN   TestAdminPauseResumeEndpoints
 --- PASS: TestAdminPauseResumeEndpoints (0.00s)
+=== RUN   TestAdminFailedEndpoints
+=== RUN   TestAdminFailedEndpoints/detail
+=== RUN   TestAdminFailedEndpoints/retry_all
+=== RUN   TestAdminFailedEndpoints/purge_all
+--- PASS: TestAdminFailedEndpoints (0.00s)
+    --- PASS: TestAdminFailedEndpoints/detail (0.00s)
+    --- PASS: TestAdminFailedEndpoints/retry_all (0.00s)
+    --- PASS: TestAdminFailedEndpoints/purge_all (0.00s)
 === RUN   TestSqliteStorageFlow
 === RUN   TestSqliteStorageFlow/EnqueueAndDequeue
 === RUN   TestSqliteStorageFlow/RetryFlowAndBackoff
@@ -835,7 +1005,11 @@ ok  	github.com/wesleyskap/orkai-runiq/v2/queue	0.392s
 === RUN   TestSqliteStorageFlow/ActiveProcesses
 === RUN   TestSqliteStorageFlow/ThrottlingAndRateLimiting
 === RUN   TestSqliteStorageFlow/Batches
---- PASS: TestSqliteStorageFlow (0.15s)
+=== RUN   TestSqliteStorageFlow/NewFeaturesV240
+=== RUN   TestSqliteStorageFlow/NewFeaturesV240/CronRegistration
+=== RUN   TestSqliteStorageFlow/NewFeaturesV240/JobDetail
+=== RUN   TestSqliteStorageFlow/NewFeaturesV240/BulkRetryPurge
+--- PASS: TestSqliteStorageFlow (0.16s)
     --- PASS: TestSqliteStorageFlow/EnqueueAndDequeue (0.00s)
     --- PASS: TestSqliteStorageFlow/RetryFlowAndBackoff (0.00s)
     --- PASS: TestSqliteStorageFlow/AdminActions (0.00s)
@@ -843,22 +1017,13 @@ ok  	github.com/wesleyskap/orkai-runiq/v2/queue	0.392s
     --- PASS: TestSqliteStorageFlow/ActiveProcesses (0.00s)
     --- PASS: TestSqliteStorageFlow/ThrottlingAndRateLimiting (0.15s)
     --- PASS: TestSqliteStorageFlow/Batches (0.00s)
+    --- PASS: TestSqliteStorageFlow/NewFeaturesV240 (0.00s)
+        --- PASS: TestSqliteStorageFlow/NewFeaturesV240/CronRegistration (0.00s)
+        --- PASS: TestSqliteStorageFlow/NewFeaturesV240/JobDetail (0.00s)
+        --- PASS: TestSqliteStorageFlow/NewFeaturesV240/BulkRetryPurge (0.00s)
 === RUN   TestPostgresStorageFlow
-=== RUN   TestPostgresStorageFlow/EnqueueAndDequeue
-=== RUN   TestPostgresStorageFlow/SkipLockedConcurrency
-=== RUN   TestPostgresStorageFlow/RetryFlowAndBackoff
-=== RUN   TestPostgresStorageFlow/AdminActions
-=== RUN   TestPostgresStorageFlow/UniqueJobs
-=== RUN   TestPostgresStorageFlow/ActiveProcesses
-=== RUN   TestPostgresStorageFlow/ThrottlingAndRateLimiting
---- PASS: TestPostgresStorageFlow (0.31s)
-    --- PASS: TestPostgresStorageFlow/EnqueueAndDequeue (0.00s)
-    --- PASS: TestPostgresStorageFlow/SkipLockedConcurrency (0.02s)
-    --- PASS: TestPostgresStorageFlow/RetryFlowAndBackoff (0.03s)
-    --- PASS: TestPostgresStorageFlow/AdminActions (0.03s)
-    --- PASS: TestPostgresStorageFlow/UniqueJobs (0.02s)
-    --- PASS: TestPostgresStorageFlow/ActiveProcesses (0.01s)
-    --- PASS: TestPostgresStorageFlow/ThrottlingAndRateLimiting (0.18s)
+    storage_test.go:35: skipping postgres storage tests, service unreachable
+--- SKIP: TestPostgresStorageFlow (0.00s)
 === RUN   TestRedisStorageFlow
 === RUN   TestRedisStorageFlow/EnqueueAndDequeue
 === RUN   TestRedisStorageFlow/RetryFlowAndBackoff
@@ -866,13 +1031,13 @@ ok  	github.com/wesleyskap/orkai-runiq/v2/queue	0.392s
 === RUN   TestRedisStorageFlow/UniqueJobs
 === RUN   TestRedisStorageFlow/ActiveProcesses
 === RUN   TestRedisStorageFlow/ThrottlingAndRateLimiting
---- PASS: TestRedisStorageFlow (0.27s)
+--- PASS: TestRedisStorageFlow (0.24s)
     --- PASS: TestRedisStorageFlow/EnqueueAndDequeue (0.02s)
     --- PASS: TestRedisStorageFlow/RetryFlowAndBackoff (0.02s)
-    --- PASS: TestRedisStorageFlow/AdminActions (0.02s)
+    --- PASS: TestRedisStorageFlow/AdminActions (0.01s)
     --- PASS: TestRedisStorageFlow/UniqueJobs (0.01s)
     --- PASS: TestRedisStorageFlow/ActiveProcesses (0.01s)
-    --- PASS: TestRedisStorageFlow/ThrottlingAndRateLimiting (0.17s)
+    --- PASS: TestRedisStorageFlow/ThrottlingAndRateLimiting (0.16s)
 === RUN   TestOTelTracer_ExtractAndInjectTrace
 --- PASS: TestOTelTracer_ExtractAndInjectTrace (0.00s)
 === RUN   TestOTelTracer_Metrics
@@ -899,7 +1064,16 @@ ok  	github.com/wesleyskap/orkai-runiq/v2/queue	0.392s
 --- PASS: TestWorkerPoolShutdown (0.05s)
 === RUN   TestWorkerPoolQueuePause
 --- PASS: TestWorkerPoolQueuePause (0.10s)
+=== RUN   TestWorkflowSequentialExecution
+--- PASS: TestWorkflowSequentialExecution (0.00s)
+=== RUN   TestWorkflowComplexDAG
+--- PASS: TestWorkflowComplexDAG (0.00s)
+=== RUN   TestWorkflowCascadeFailure
+--- PASS: TestWorkflowCascadeFailure (0.00s)
+=== RUN   TestWorkflowCascadeCancellation
+--- PASS: TestWorkflowCascadeCancellation (0.00s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/v2/test	2.233s
+ok  	github.com/wesleyskap/orkai-runiq/v2/test	3.869s
+?   	github.com/wesleyskap/orkai-runiq/v2/test/queuetest	[no test files]
 ```
 

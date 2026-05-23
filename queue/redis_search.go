@@ -9,22 +9,27 @@ import (
 func (r *RedisStorage) collectJobIDsForStatus(ctx context.Context, status string, queues []string) []jobMeta {
 	var metas []jobMeta
 	for _, q := range queues {
-		if status == "" || status == "pending" {
-			metas = append(metas, r.fetchMeta(ctx, "runiq:queue:"+q, q, "pending")...)
-			metas = append(metas, r.fetchZSetMeta(ctx, "runiq:scheduled:"+q, q, "pending")...)
-		}
-		if status == "" || status == "running" {
-			metas = append(metas, r.fetchSetMeta(ctx, "runiq:active:"+q, q, "running")...)
-		}
-		if status == "" || status == "processed" {
-			metas = append(metas, r.fetchMeta(ctx, "runiq:processed:"+q, q, "processed")...)
-		}
-		if status == "" || status == "failed" {
-			metas = append(metas, r.fetchMeta(ctx, "runiq:failed:"+q, q, "failed")...)
-		}
-		if status == "" || status == "dead" {
-			metas = append(metas, r.fetchMeta(ctx, "runiq:dead:"+q, q, "dead")...)
-		}
+		metas = r.appendMetasForQueue(ctx, metas, q, status)
+	}
+	return metas
+}
+
+func (r *RedisStorage) appendMetasForQueue(ctx context.Context, metas []jobMeta, q, status string) []jobMeta {
+	if status == "" || status == "pending" {
+		metas = append(metas, r.fetchMeta(ctx, r.k("runiq:queue:"+q), q, "pending")...)
+		metas = append(metas, r.fetchZSetMeta(ctx, r.k("runiq:scheduled:"+q), q, "pending")...)
+	}
+	if status == "" || status == "running" {
+		metas = append(metas, r.fetchSetMeta(ctx, r.k("runiq:active:"+q), q, "running")...)
+	}
+	if status == "" || status == "processed" {
+		metas = append(metas, r.fetchMeta(ctx, r.k("runiq:processed:"+q), q, "processed")...)
+	}
+	if status == "" || status == "failed" {
+		metas = append(metas, r.fetchMeta(ctx, r.k("runiq:failed:"+q), q, "failed")...)
+	}
+	if status == "" || status == "dead" {
+		metas = append(metas, r.fetchMeta(ctx, r.k("runiq:dead:"+q), q, "dead")...)
 	}
 	return metas
 }
@@ -113,7 +118,7 @@ func getMetasIDs(metas []jobMeta) []string {
 
 // GetJobs queries jobs with pagination and filters for Redis.
 func (r *RedisStorage) GetJobs(ctx context.Context, q, status string, page, limit int) ([]JobDetail, int64, error) {
-	queues, err := r.client.SMembers(ctx, "runiq:queues").Result()
+	queues, err := r.client.SMembers(ctx, r.k("runiq:queues")).Result()
 	if err != nil {
 		return nil, 0, err
 	}
@@ -121,11 +126,11 @@ func (r *RedisStorage) GetJobs(ctx context.Context, q, status string, page, limi
 	if len(metas) == 0 {
 		return []JobDetail{}, 0, nil
 	}
-	envs, err := r.client.HMGet(ctx, "runiq:jobs", getMetasIDs(metas)...).Result()
+	envs, err := r.client.HMGet(ctx, r.k("runiq:jobs"), getMetasIDs(metas)...).Result()
 	if err != nil {
 		return nil, 0, err
 	}
-	errsMap, _ := r.client.HGetAll(ctx, "runiq:errors").Result()
+	errsMap, _ := r.client.HGetAll(ctx, r.k("runiq:errors")).Result()
 	filtered := filterJobs(envs, metas, q, errsMap)
 	paginated, total := paginateJobs(filtered, page, limit)
 	return paginated, total, nil
@@ -169,3 +174,4 @@ func (r *RedisStorage) BulkPurge(ctx context.Context, jobIDs []string) error {
 	}
 	return nil
 }
+

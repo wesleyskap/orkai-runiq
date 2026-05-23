@@ -10,14 +10,12 @@ import (
 )
 
 // CreateBatch registers a new batch record with open status and callback details.
-// Usage example:
-//	err := storage.CreateBatch(ctx, "batch-123", callback, expiresAt)
 func (r *RedisStorage) CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope, expiresAt *time.Time) error {
 	callbackJSON, err := json.Marshal(callback)
 	if err != nil {
 		return err
 	}
-	batchKey := "runiq:batch:" + batchID
+	batchKey := r.k("runiq:batch:" + batchID)
 	pipe := r.client.Pipeline()
 	pipe.HSet(ctx, batchKey, "status", "open")
 	pipe.HSet(ctx, batchKey, "total", 0)
@@ -25,7 +23,7 @@ func (r *RedisStorage) CreateBatch(ctx context.Context, batchID string, callback
 	pipe.HSet(ctx, batchKey, "callback", callbackJSON)
 	if expiresAt != nil {
 		pipe.HSet(ctx, batchKey, "expires_at", expiresAt.Format(time.RFC3339))
-		pipe.ZAdd(ctx, "runiq:batches:expire", redis.Z{
+		pipe.ZAdd(ctx, r.k("runiq:batches:expire"), redis.Z{
 			Score:  float64(expiresAt.Unix()),
 			Member: batchID,
 		})
@@ -35,8 +33,6 @@ func (r *RedisStorage) CreateBatch(ctx context.Context, batchID string, callback
 }
 
 // EnqueueInBatch associates a job envelope with a batch and enqueues it, incrementing batch job counts.
-// Usage example:
-//	err := storage.EnqueueInBatch(ctx, "batch-123", env)
 func (r *RedisStorage) EnqueueInBatch(ctx context.Context, batchID string, env *JobEnvelope) error {
 	env.BatchID = batchID
 	if env.MaxAttempts <= 0 {
@@ -52,7 +48,7 @@ func (r *RedisStorage) EnqueueInBatch(ctx context.Context, batchID string, env *
 }
 
 func (r *RedisStorage) incrementBatchCounts(ctx context.Context, batchID string) error {
-	batchKey := "runiq:batch:" + batchID
+	batchKey := r.k("runiq:batch:" + batchID)
 	pipe := r.client.Pipeline()
 	pipe.HIncrBy(ctx, batchKey, "total", 1)
 	pipe.HIncrBy(ctx, batchKey, "pending", 1)
@@ -66,8 +62,8 @@ func (r *RedisStorage) enqueueBatchJob(ctx context.Context, env *JobEnvelope) er
 		return err
 	}
 	pipe := r.client.Pipeline()
-	pipe.HSet(ctx, "runiq:jobs", env.JobID, data)
-	pipe.SAdd(ctx, "runiq:queues", env.Queue)
+	pipe.HSet(ctx, r.k("runiq:jobs"), env.JobID, data)
+	pipe.SAdd(ctx, r.k("runiq:queues"), env.Queue)
 	r.addJobToQueue(ctx, pipe, env)
 	_, err = pipe.Exec(ctx)
 	return err
@@ -75,24 +71,22 @@ func (r *RedisStorage) enqueueBatchJob(ctx context.Context, env *JobEnvelope) er
 
 func (r *RedisStorage) addJobToQueue(ctx context.Context, pipe redis.Pipeliner, env *JobEnvelope) {
 	if env.RunAt != nil && env.RunAt.After(time.Now()) {
-		pipe.ZAdd(ctx, "runiq:scheduled:"+env.Queue, redis.Z{
+		pipe.ZAdd(ctx, r.k("runiq:scheduled:"+env.Queue), redis.Z{
 			Score:  float64(env.RunAt.Unix()),
 			Member: env.JobID,
 		})
 		return
 	}
-	pipe.LPush(ctx, "runiq:queue:"+env.Queue, env.JobID)
+	pipe.LPush(ctx, r.k("runiq:queue:"+env.Queue), env.JobID)
 }
 
 // SubmitBatch seals the batch enqueuing phase and triggers callback if all jobs have already completed.
-// Usage example:
-//	err := storage.SubmitBatch(ctx, "batch-123")
 func (r *RedisStorage) SubmitBatch(ctx context.Context, batchID string) error {
 	expired, err := r.checkBatchExpired(ctx, batchID)
 	if err != nil || expired {
 		return err
 	}
-	batchKey := "runiq:batch:" + batchID
+	batchKey := r.k("runiq:batch:" + batchID)
 	if err := r.client.HSet(ctx, batchKey, "status", "sealed").Err(); err != nil {
 		return err
 	}
@@ -133,7 +127,7 @@ func (r *RedisStorage) completeBatch(ctx context.Context, batchKey string) error
 }
 
 func (r *RedisStorage) checkBatchExpired(ctx context.Context, batchID string) (bool, error) {
-	batchKey := "runiq:batch:" + batchID
+	batchKey := r.k("runiq:batch:" + batchID)
 	val, err := r.client.HGet(ctx, batchKey, "expires_at").Result()
 	if err == redis.Nil || val == "" {
 		return false, nil
@@ -154,7 +148,8 @@ func (r *RedisStorage) checkBatchExpired(ctx context.Context, batchID string) (b
 func (r *RedisStorage) failExpiredBatch(ctx context.Context, key, id string) (bool, error) {
 	pipe := r.client.Pipeline()
 	pipe.HSet(ctx, key, "status", "failed")
-	pipe.ZRem(ctx, "runiq:batches:expire", id)
+	pipe.ZRem(ctx, r.k("runiq:batches:expire"), id)
 	_, err := pipe.Exec(ctx)
 	return true, err
 }
+

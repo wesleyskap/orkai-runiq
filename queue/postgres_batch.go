@@ -13,7 +13,7 @@ func (p *PostgresStorage) CreateBatch(ctx context.Context, batchID string, callb
 	query := `
 		INSERT INTO runiq_batches (batch_id, callback_queue, callback_name, callback_args, total_jobs, pending_jobs, status, expires_at)
 		VALUES ($1, $2, $3, $4, 0, 0, 'open', $5)`
-	_, err := p.db.ExecContext(ctx, query, batchID, callback.Queue, callback.Name, callback.Args, expiresAt)
+	_, err := p.db.ExecContext(ctx, p.q(query), batchID, callback.Queue, callback.Name, callback.Args, expiresAt)
 	return err
 }
 
@@ -41,7 +41,7 @@ func (p *PostgresStorage) EnqueueInBatch(ctx context.Context, batchID string, en
 
 func (p *PostgresStorage) updateBatchCount(ctx context.Context, tx *sql.Tx, batchID string) error {
 	query := "UPDATE runiq_batches SET total_jobs = total_jobs + 1, pending_jobs = pending_jobs + 1 WHERE batch_id = $1"
-	_, err := tx.ExecContext(ctx, query, batchID)
+	_, err := tx.ExecContext(ctx, p.q(query), batchID)
 	return err
 }
 
@@ -57,7 +57,7 @@ func (p *PostgresStorage) insertBatchJob(ctx context.Context, tx *sql.Tx, batchI
 	query := `
 		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status, attempts, max_attempts, run_at, unique_key, batch_id)
 		VALUES ($1, $2, $3, $4, $5, $6, 'pending', 0, $7, $8, $9, $10)`
-	_, err := tx.ExecContext(ctx, query,
+	_, err := tx.ExecContext(ctx, p.q(query),
 		env.JobID, env.Queue, env.Name, env.Args,
 		env.TraceContext.TraceID, env.TraceContext.SpanID,
 		maxAttempts, runAt, env.UniqueKey, batchID,
@@ -97,12 +97,12 @@ func (p *PostgresStorage) processSubmit(ctx context.Context, tx *sql.Tx, batchID
 
 func (p *PostgresStorage) checkBatchExpired(ctx context.Context, tx *sql.Tx, batchID string) (bool, error) {
 	var expiresAt *time.Time
-	err := tx.QueryRowContext(ctx, "SELECT expires_at FROM runiq_batches WHERE batch_id = $1", batchID).Scan(&expiresAt)
+	err := tx.QueryRowContext(ctx, p.q("SELECT expires_at FROM runiq_batches WHERE batch_id = $1"), batchID).Scan(&expiresAt)
 	if err != nil {
 		return false, err
 	}
 	if expiresAt != nil && time.Now().After(*expiresAt) {
-		_, err = tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'failed' WHERE batch_id = $1", batchID)
+		_, err = tx.ExecContext(ctx, p.q("UPDATE runiq_batches SET status = 'failed' WHERE batch_id = $1"), batchID)
 		return true, err
 	}
 	return false, nil
@@ -117,12 +117,12 @@ func (p *PostgresStorage) sealBatch(ctx context.Context, tx *sql.Tx, batchID str
 		SET status = 'sealed'
 		WHERE batch_id = $1
 		RETURNING pending_jobs, callback_queue, callback_name, callback_args`
-	err := tx.QueryRowContext(ctx, query, batchID).Scan(&pendingJobs, &callbackQueue, &callbackName, &callbackArgs)
+	err := tx.QueryRowContext(ctx, p.q(query), batchID).Scan(&pendingJobs, &callbackQueue, &callbackName, &callbackArgs)
 	return pendingJobs, callbackQueue, callbackName, callbackArgs, err
 }
 
 func (p *PostgresStorage) completeBatchAndEnqueue(ctx context.Context, tx *sql.Tx, batchID, cq, cn string, ca []byte) error {
-	_, err := tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'completed' WHERE batch_id = $1", batchID)
+	_, err := tx.ExecContext(ctx, p.q("UPDATE runiq_batches SET status = 'completed' WHERE batch_id = $1"), batchID)
 	if err != nil {
 		return err
 	}
@@ -130,6 +130,6 @@ func (p *PostgresStorage) completeBatchAndEnqueue(ctx context.Context, tx *sql.T
 	query := `
 		INSERT INTO runiq_jobs (job_id, queue, name, args, status, attempts, max_attempts, run_at)
 		VALUES ($1, $2, $3, $4, 'pending', 0, 3, CURRENT_TIMESTAMP)`
-	_, err = tx.ExecContext(ctx, query, callbackJobID, cq, cn, ca)
+	_, err = tx.ExecContext(ctx, p.q(query), callbackJobID, cq, cn, ca)
 	return err
 }

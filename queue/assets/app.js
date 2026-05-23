@@ -25,8 +25,9 @@ const chartConfig = {
                 borderColor: 'rgba(99, 102, 241, 0.8)',
                 backgroundColor: 'rgba(99, 102, 241, 0.1)',
                 borderWidth: 2,
-                tension: 0.4,
-                fill: true
+                tension: 0,
+                fill: true,
+                spanGaps: true
             },
             {
                 label: 'Errors (errors/s)',
@@ -34,18 +35,24 @@ const chartConfig = {
                 borderColor: 'rgba(239, 68, 68, 0.8)',
                 backgroundColor: 'rgba(239, 68, 68, 0.1)',
                 borderWidth: 2,
-                tension: 0.4,
-                fill: true
+                tension: 0,
+                fill: true,
+                spanGaps: true
             }
         ]
     },
     options: {
+        clip: false,
+        animation: {
+            duration: 0
+        },
         responsive: true,
         maintainAspectRatio: false,
         scales: {
             x: {
                 grid: { color: 'rgba(255, 255, 255, 0.05)' },
-                ticks: { color: '#94a3b8', font: { size: 10 } }
+                ticks: { color: '#94a3b8', font: { size: 10 } },
+                offset: true
             },
             y: {
                 grid: { color: 'rgba(255, 255, 255, 0.05)' },
@@ -64,6 +71,9 @@ const chartConfig = {
 function initChart() {
     const canvas = document.getElementById('performance-chart');
     if (!canvas) return;
+    if (chart) {
+        chart.destroy();
+    }
     const ctx = canvas.getContext('2d');
     chart = new Chart(ctx, chartConfig);
 }
@@ -392,11 +402,18 @@ function updateMainStats(data) {
     document.getElementById('val-failed').innerText = data.failed || 0;
 }
 
+const maxChartPoints = 60;
+
 function initChartData(now) {
     const timeStr = new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     chartLabels.push(timeStr);
     throughputData.push(0);
     errorRateData.push(0);
+    if (chartLabels.length > maxChartPoints) {
+        chartLabels.shift();
+        throughputData.shift();
+        errorRateData.shift();
+    }
     initChart();
 }
 
@@ -405,14 +422,13 @@ function pushChartMetrics(now, totalProcessed, totalFailed) {
     if (elapsedSec <= 0) return;
     const pDiff = Math.max(0, totalProcessed - lastProcessed);
     const fDiff = Math.max(0, totalFailed - lastFailed);
-    const throughput = Number((pDiff / elapsedSec).toFixed(2));
-    const errorRate = Number((fDiff / elapsedSec).toFixed(2));
+    const throughput = isFinite(pDiff / elapsedSec) ? Number((pDiff / elapsedSec).toFixed(2)) : 0;
+    const errorRate = isFinite(fDiff / elapsedSec) ? Number((fDiff / elapsedSec).toFixed(2)) : 0;
     const timeStr = new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    
     chartLabels.push(timeStr);
     throughputData.push(throughput);
     errorRateData.push(errorRate);
-    if (chartLabels.length > 15) {
+    if (chartLabels.length > maxChartPoints) {
         chartLabels.shift();
         throughputData.shift();
         errorRateData.shift();
@@ -481,8 +497,11 @@ function createProcessRow(p) {
     const concurrencyStr = p.max_concurrency > 0
         ? `${p.concurrency} <span style="font-size: 0.75rem; color: var(--text-muted);">(Autoscaling: ${p.min_concurrency}-${p.max_concurrency})</span>`
         : `${p.concurrency}`;
+    const leaderBadge = p.is_leader
+        ? ` <span style="background: #10b981; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; margin-left: 6px; letter-spacing: 0.05em;">Leader</span>`
+        : '';
     tr.innerHTML = `
-        <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${p.process_id}</td>
+        <td style="font-family: monospace; font-size: 0.85rem; color: var(--text-muted);">${p.process_id}${leaderBadge}</td>
         <td style="font-weight: 600;">${concurrencyStr}</td>
         <td>${queuesStr}</td>
         <td style="color: var(--running);">${hTime}</td>

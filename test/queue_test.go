@@ -267,8 +267,24 @@ func (f *FakeStorage) DeleteCronSchedule(ctx context.Context, name string) error
 	return nil
 }
 
+func (f *FakeStorage) AcquireLeader(ctx context.Context, clientID string, ttl time.Duration) (bool, error) {
+	_ = ctx
+	_ = clientID
+	_ = ttl
+	return true, nil
+}
 
+func (f *FakeStorage) ReleaseLeader(ctx context.Context, clientID string) error {
+	_ = ctx
+	_ = clientID
+	return nil
+}
 
+func (f *FakeStorage) ArchiveJobs(ctx context.Context, age time.Duration) (int64, error) {
+	_ = ctx
+	_ = age
+	return 0, nil
+}
 
 // DummyJob implements queue.Job for verification.
 type DummyJob struct {

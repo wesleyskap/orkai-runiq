@@ -36,6 +36,15 @@ func WithMiddleware(mws ...func(http.Handler) http.Handler) ServerOption {
 	}
 }
 
+// WithServerNamespace configures a custom namespace prefix for the Server's storage.
+func WithServerNamespace(ns string) ServerOption {
+	return func(s *Server) {
+		if nsStore, ok := s.storage.(Namespacer); ok {
+			nsStore.SetNamespace(ns)
+		}
+	}
+}
+
 // NewServer instantiates a new Dashboard Server.
 // Usage example:
 //

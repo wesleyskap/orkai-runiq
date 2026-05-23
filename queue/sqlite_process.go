@@ -17,7 +17,7 @@ func (s *SqliteStorage) RegisterProcess(ctx context.Context, info *ProcessInfo) 
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (process_id) DO UPDATE SET
 			concurrency = ?, queues = ?, heartbeat_at = ?, min_concurrency = ?, max_concurrency = ?`
-	_, err = s.db.ExecContext(ctx, query,
+	_, err = s.db.ExecContext(ctx, s.q(query),
 		info.ProcessID, info.Concurrency, string(queuesJSON), info.HeartbeatAt, info.MinConcurrency, info.MaxConcurrency,
 		info.Concurrency, string(queuesJSON), info.HeartbeatAt, info.MinConcurrency, info.MaxConcurrency)
 	return err
@@ -25,19 +25,41 @@ func (s *SqliteStorage) RegisterProcess(ctx context.Context, info *ProcessInfo) 
 
 func (s *SqliteStorage) HeartbeatProcess(ctx context.Context, processID string) error {
 	query := `UPDATE runiq_processes SET heartbeat_at = ? WHERE process_id = ?`
-	_, err := s.db.ExecContext(ctx, query, time.Now(), processID)
+	_, err := s.db.ExecContext(ctx, s.q(query), time.Now(), processID)
 	return err
 }
 
 func (s *SqliteStorage) GetActiveProcesses(ctx context.Context) ([]ProcessInfo, error) {
 	dead := time.Now().Add(-15 * time.Second)
-	_, _ = s.db.ExecContext(ctx, "DELETE FROM runiq_processes WHERE heartbeat_at < ?", dead)
-	rows, err := s.db.QueryContext(ctx, "SELECT process_id, concurrency, queues, heartbeat_at, min_concurrency, max_concurrency FROM runiq_processes ORDER BY heartbeat_at DESC")
+	_, _ = s.db.ExecContext(ctx, s.q("DELETE FROM runiq_processes WHERE heartbeat_at < ?"), dead)
+	rows, err := s.db.QueryContext(ctx, s.q("SELECT process_id, concurrency, queues, heartbeat_at, min_concurrency, max_concurrency FROM runiq_processes ORDER BY heartbeat_at DESC"))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanProcesses(rows)
+	list, err := scanProcesses(rows)
+	if err != nil {
+		return nil, err
+	}
+	return s.markLeader(ctx, list)
+}
+
+func (s *SqliteStorage) markLeader(ctx context.Context, list []ProcessInfo) ([]ProcessInfo, error) {
+	var leader string
+	var expires time.Time
+	err := s.db.QueryRowContext(ctx, s.q("SELECT holder_id, expires_at FROM runiq_leader_leases WHERE lease_key = 'leader'")).Scan(&leader, &expires)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+	if err == sql.ErrNoRows || time.Now().After(expires) {
+		return list, nil
+	}
+	for i := range list {
+		if list[i].ProcessID == leader {
+			list[i].IsLeader = true
+		}
+	}
+	return list, nil
 }
 
 func scanProcesses(rows *sql.Rows) ([]ProcessInfo, error) {
@@ -55,11 +77,11 @@ func scanProcesses(rows *sql.Rows) ([]ProcessInfo, error) {
 }
 
 func (s *SqliteStorage) LockCronExecution(ctx context.Context, cronName string, executionMinute time.Time) (bool, error) {
-	_, _ = s.db.ExecContext(ctx, "DELETE FROM runiq_cron_locks WHERE execution_minute < ?", time.Now().Add(-1*time.Hour))
-	res, err := s.db.ExecContext(ctx, `
+	_, _ = s.db.ExecContext(ctx, s.q("DELETE FROM runiq_cron_locks WHERE execution_minute < ?"), time.Now().Add(-1*time.Hour))
+	res, err := s.db.ExecContext(ctx, s.q(`
 		INSERT INTO runiq_cron_locks (cron_name, execution_minute, acquired_at)
 		VALUES (?, ?, ?)
-		ON CONFLICT (cron_name, execution_minute) DO NOTHING`,
+		ON CONFLICT (cron_name, execution_minute) DO NOTHING`),
 		cronName, executionMinute.Truncate(time.Minute), time.Now(),
 	)
 	if err != nil {
@@ -74,7 +96,7 @@ func (s *SqliteStorage) LockCronExecution(ctx context.Context, cronName string, 
 
 func (s *SqliteStorage) GetRunningJobsCount(ctx context.Context, jobName string) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM runiq_jobs WHERE name = ? AND status = 'running'", jobName).Scan(&count)
+	err := s.db.QueryRowContext(ctx, s.q("SELECT COUNT(*) FROM runiq_jobs WHERE name = ? AND status = 'running'"), jobName).Scan(&count)
 	return count, err
 }
 
@@ -95,21 +117,21 @@ func (s *SqliteStorage) CheckRateLimit(ctx context.Context, jobName string, limi
 func (s *SqliteStorage) evaluateRateLimit(ctx context.Context, tx *sql.Tx, jobName string, limit int, period time.Duration) (bool, error) {
 	now := time.Now().UnixNano()
 	clearBefore := now - period.Nanoseconds()
-	_, err := tx.ExecContext(ctx, "DELETE FROM runiq_rate_limits WHERE job_name = ? AND request_timestamp < ?", jobName, clearBefore)
+	_, err := tx.ExecContext(ctx, s.q("DELETE FROM runiq_rate_limits WHERE job_name = ? AND request_timestamp < ?"), jobName, clearBefore)
 	if err != nil {
 		return false, err
 	}
 	var count int
-	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM runiq_rate_limits WHERE job_name = ?", jobName).Scan(&count)
+	err = tx.QueryRowContext(ctx, s.q("SELECT COUNT(*) FROM runiq_rate_limits WHERE job_name = ?"), jobName).Scan(&count)
 	if err != nil || count >= limit {
 		return false, err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO runiq_rate_limits (job_name, request_timestamp) VALUES (?, ?)", jobName, now)
+	_, err = tx.ExecContext(ctx, s.q("INSERT INTO runiq_rate_limits (job_name, request_timestamp) VALUES (?, ?)"), jobName, now)
 	return err == nil, err
 }
 
 func (s *SqliteStorage) PostponeJob(ctx context.Context, jobID string, queueName string, delay time.Duration) error {
 	runAt := time.Now().Add(delay)
-	_, err := s.db.ExecContext(ctx, "UPDATE runiq_jobs SET status = 'pending', run_at = ?, locked_at = NULL WHERE job_id = ?", runAt, jobID)
+	_, err := s.db.ExecContext(ctx, s.q("UPDATE runiq_jobs SET status = 'pending', run_at = ?, locked_at = NULL WHERE job_id = ?"), runAt, jobID)
 	return err
 }

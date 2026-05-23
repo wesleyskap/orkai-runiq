@@ -3,6 +3,9 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type jobMeta struct {
@@ -12,7 +15,7 @@ type jobMeta struct {
 }
 
 func (r *RedisStorage) GetStats(ctx context.Context) (*Stats, error) {
-	queues, err := r.client.SMembers(ctx, "runiq:queues").Result()
+	queues, err := r.client.SMembers(ctx, r.k("runiq:queues")).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +40,7 @@ func (r *RedisStorage) loadCronJobs(ctx context.Context, stats *Stats) error {
 }
 
 func (r *RedisStorage) loadStaticCrons(ctx context.Context, m map[string]CronJobDetail) {
-	allCrons, err := r.client.HVals(ctx, "runiq:cron_jobs").Result()
+	allCrons, err := r.client.HVals(ctx, r.k("runiq:cron_jobs")).Result()
 	if err != nil {
 		return
 	}
@@ -51,23 +54,18 @@ func (r *RedisStorage) loadStaticCrons(ctx context.Context, m map[string]CronJob
 }
 
 func (r *RedisStorage) loadDynamicCrons(ctx context.Context, m map[string]CronJobDetail) {
-	allCrons, err := r.client.HVals(ctx, "runiq:cron_schedules").Result()
+	allCrons, err := r.client.HVals(ctx, r.k("runiq:cron_schedules")).Result()
 	if err != nil {
 		return
 	}
 	for _, data := range allCrons {
 		var c CronJob
 		if err := json.Unmarshal([]byte(data), &c); err == nil {
-			cd := CronJobDetail{
-				Name:       c.Name,
-				Expression: c.Spec,
-				Queue:      c.Queue,
-				Payload:    string(c.Payload),
-				Timezone:   c.Timezone,
-				Source:     "dynamic",
-				Paused:     c.Paused,
+			m[c.Name] = CronJobDetail{
+				Name: c.Name, Expression: c.Spec, Queue: c.Queue,
+				Payload: string(c.Payload), Timezone: c.Timezone,
+				Source: "dynamic", Paused: c.Paused,
 			}
-			m[cd.Name] = cd
 		}
 	}
 }
@@ -103,7 +101,7 @@ func (r *RedisStorage) processQueue(ctx context.Context, q string, stats *Stats,
 }
 
 func (r *RedisStorage) getPausedQueuesMap(ctx context.Context) (map[string]bool, error) {
-	paused, err := r.client.SMembers(ctx, "runiq:paused_queues").Result()
+	paused, err := r.client.SMembers(ctx, r.k("runiq:paused_queues")).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -116,22 +114,32 @@ func (r *RedisStorage) getPausedQueuesMap(ctx context.Context) (map[string]bool,
 
 func (r *RedisStorage) getQueueStats(ctx context.Context, q string) (*QueueStats, error) {
 	pipe := r.client.Pipeline()
-	pendingCmd := pipe.LLen(ctx, "runiq:queue:"+q)
-	scheduledCmd := pipe.ZCard(ctx, "runiq:scheduled:"+q)
-	activeCmd := pipe.SCard(ctx, "runiq:active:"+q)
-	processedCmd := pipe.LLen(ctx, "runiq:processed:"+q)
-	failedCmd := pipe.LLen(ctx, "runiq:failed:"+q)
-	deadCmd := pipe.LLen(ctx, "runiq:dead:"+q)
+	pendingCmd := pipe.LLen(ctx, r.k("runiq:queue:"+q))
+	scheduledCmd := pipe.ZCard(ctx, r.k("runiq:scheduled:"+q))
+	activeCmd := pipe.SCard(ctx, r.k("runiq:active:"+q))
+	processedCmd := pipe.LLen(ctx, r.k("runiq:processed:"+q))
+	failedCmd := pipe.LLen(ctx, r.k("runiq:failed:"+q))
+	deadCmd := pipe.LLen(ctx, r.k("runiq:dead:"+q))
+	processedCountCmd := pipe.Get(ctx, r.k("runiq:processed_count:"+q))
+	deadCountCmd := pipe.Get(ctx, r.k("runiq:dead_count:"+q))
 	_, err := pipe.Exec(ctx)
-	if err != nil {
+	if err != nil && err != redis.Nil {
 		return nil, err
+	}
+	processedVal, _ := strconv.ParseInt(processedCountCmd.Val(), 10, 64)
+	if processedVal <= 0 {
+		processedVal = processedCmd.Val()
+	}
+	deadVal, _ := strconv.ParseInt(deadCountCmd.Val(), 10, 64)
+	if deadVal <= 0 {
+		deadVal = deadCmd.Val()
 	}
 	return &QueueStats{
 		Name:      q,
 		Pending:   pendingCmd.Val() + scheduledCmd.Val(),
 		Running:   activeCmd.Val(),
-		Processed: processedCmd.Val(),
-		Failed:    failedCmd.Val() + deadCmd.Val(),
+		Processed: processedVal,
+		Failed:    failedCmd.Val() + deadVal,
 	}, nil
 }
 
@@ -143,12 +151,12 @@ func (r *RedisStorage) accumulateQueueTotals(stats *Stats, qs *QueueStats) {
 }
 
 func (r *RedisStorage) collectRecentJobIDs(ctx context.Context, q string, allJobIDs *[]string, jobsMeta *[]jobMeta) {
-	r.appendJobIDs(r.fetchList(ctx, "runiq:queue:"+q), q, "pending", allJobIDs, jobsMeta)
-	r.appendJobIDs(r.fetchZSet(ctx, "runiq:scheduled:"+q), q, "pending", allJobIDs, jobsMeta)
-	r.appendJobIDs(r.fetchSet(ctx, "runiq:active:"+q), q, "running", allJobIDs, jobsMeta)
-	r.appendJobIDs(r.fetchList(ctx, "runiq:processed:"+q), q, "processed", allJobIDs, jobsMeta)
-	r.appendJobIDs(r.fetchList(ctx, "runiq:failed:"+q), q, "failed", allJobIDs, jobsMeta)
-	r.appendJobIDs(r.fetchList(ctx, "runiq:dead:"+q), q, "dead", allJobIDs, jobsMeta)
+	r.appendJobIDs(r.fetchList(ctx, r.k("runiq:queue:"+q)), q, "pending", allJobIDs, jobsMeta)
+	r.appendJobIDs(r.fetchZSet(ctx, r.k("runiq:scheduled:"+q)), q, "pending", allJobIDs, jobsMeta)
+	r.appendJobIDs(r.fetchSet(ctx, r.k("runiq:active:"+q)), q, "running", allJobIDs, jobsMeta)
+	r.appendJobIDs(r.fetchList(ctx, r.k("runiq:processed:"+q)), q, "processed", allJobIDs, jobsMeta)
+	r.appendJobIDs(r.fetchList(ctx, r.k("runiq:failed:"+q)), q, "failed", allJobIDs, jobsMeta)
+	r.appendJobIDs(r.fetchList(ctx, r.k("runiq:dead:"+q)), q, "dead", allJobIDs, jobsMeta)
 }
 
 func (r *RedisStorage) fetchList(ctx context.Context, key string) []string {
@@ -177,11 +185,11 @@ func (r *RedisStorage) loadRecentJobs(ctx context.Context, stats *Stats, ids []s
 	if len(ids) == 0 {
 		return
 	}
-	envs, err := r.client.HMGet(ctx, "runiq:jobs", ids...).Result()
+	envs, err := r.client.HMGet(ctx, r.k("runiq:jobs"), ids...).Result()
 	if err != nil {
 		return
 	}
-	errsMap, _ := r.client.HGetAll(ctx, "runiq:errors").Result()
+	errsMap, _ := r.client.HGetAll(ctx, r.k("runiq:errors")).Result()
 	r.parseEnvelopes(envs, meta, errsMap, stats)
 }
 
@@ -226,3 +234,4 @@ func (r *RedisStorage) sliceToInterfaces(slice []string) []interface{} {
 	}
 	return result
 }
+

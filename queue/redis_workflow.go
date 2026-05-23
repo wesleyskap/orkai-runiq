@@ -32,8 +32,8 @@ func (r *RedisStorage) enqueueWorkflowJob(ctx context.Context, pipe redis.Pipeli
 	if err != nil {
 		return err
 	}
-	pipe.HSet(ctx, "runiq:jobs", env.JobID, data)
-	pipe.SAdd(ctx, "runiq:queues", env.Queue)
+	pipe.HSet(ctx, r.k("runiq:jobs"), env.JobID, data)
+	pipe.SAdd(ctx, r.k("runiq:queues"), env.Queue)
 	if len(env.Dependencies) > 0 {
 		return r.enqueueBlockedJob(ctx, pipe, env)
 	}
@@ -45,25 +45,25 @@ func (r *RedisStorage) enqueueBlockedJob(ctx context.Context, pipe redis.Pipelin
 	var parentIDs []interface{}
 	for _, pID := range env.Dependencies {
 		parentIDs = append(parentIDs, pID)
-		pipe.SAdd(ctx, "runiq:job:"+pID+":dependents", env.JobID)
+		pipe.SAdd(ctx, r.k("runiq:job:"+pID+":dependents"), env.JobID)
 	}
-	pipe.SAdd(ctx, "runiq:job:"+env.JobID+":dependencies", parentIDs...)
+	pipe.SAdd(ctx, r.k("runiq:job:"+env.JobID+":dependencies"), parentIDs...)
 	return nil
 }
 
 func (r *RedisStorage) enqueueReadyJob(ctx context.Context, pipe redis.Pipeliner, env *JobEnvelope) {
 	if env.RunAt != nil && env.RunAt.After(time.Now()) {
-		pipe.ZAdd(ctx, "runiq:scheduled:"+env.Queue, redis.Z{
+		pipe.ZAdd(ctx, r.k("runiq:scheduled:"+env.Queue), redis.Z{
 			Score:  float64(env.RunAt.Unix()),
 			Member: env.JobID,
 		})
-	} else {
-		pipe.LPush(ctx, "runiq:queue:"+env.Queue, env.JobID)
+		return
 	}
+	pipe.LPush(ctx, r.k("runiq:queue:"+env.Queue), env.JobID)
 }
 
 func (r *RedisStorage) resolveDependencies(ctx context.Context, jobID string) error {
-	childIDs, err := r.client.SMembers(ctx, "runiq:job:"+jobID+":dependents").Result()
+	childIDs, err := r.client.SMembers(ctx, r.k("runiq:job:"+jobID+":dependents")).Result()
 	if err != nil || len(childIDs) == 0 {
 		return err
 	}
@@ -72,15 +72,15 @@ func (r *RedisStorage) resolveDependencies(ctx context.Context, jobID string) er
 			return err
 		}
 	}
-	return r.client.Del(ctx, "runiq:job:"+jobID+":dependents").Err()
+	return r.client.Del(ctx, r.k("runiq:job:"+jobID+":dependents")).Err()
 }
 
 func (r *RedisStorage) resolveChildDependency(ctx context.Context, childID, parentID string) error {
-	rem, err := r.client.SRem(ctx, "runiq:job:"+childID+":dependencies", parentID).Result()
+	rem, err := r.client.SRem(ctx, r.k("runiq:job:"+childID+":dependencies"), parentID).Result()
 	if err != nil || rem == 0 {
 		return err
 	}
-	count, err := r.client.SCard(ctx, "runiq:job:"+childID+":dependencies").Result()
+	count, err := r.client.SCard(ctx, r.k("runiq:job:"+childID+":dependencies")).Result()
 	if err != nil || count > 0 {
 		return err
 	}
@@ -88,7 +88,7 @@ func (r *RedisStorage) resolveChildDependency(ctx context.Context, childID, pare
 }
 
 func (r *RedisStorage) enqueueChildJob(ctx context.Context, childID string) error {
-	val, err := r.client.HGet(ctx, "runiq:jobs", childID).Result()
+	val, err := r.client.HGet(ctx, r.k("runiq:jobs"), childID).Result()
 	if err != nil {
 		return err
 	}
@@ -97,14 +97,14 @@ func (r *RedisStorage) enqueueChildJob(ctx context.Context, childID string) erro
 		return err
 	}
 	pipe := r.client.Pipeline()
-	pipe.Del(ctx, "runiq:job:"+childID+":dependencies")
+	pipe.Del(ctx, r.k("runiq:job:"+childID+":dependencies"))
 	r.enqueueReadyJob(ctx, pipe, &env)
 	_, err = pipe.Exec(ctx)
 	return err
 }
 
 func (r *RedisStorage) cascadeDependencyFailure(ctx context.Context, parentID string) error {
-	childIDs, err := r.client.SMembers(ctx, "runiq:job:"+parentID+":dependents").Result()
+	childIDs, err := r.client.SMembers(ctx, r.k("runiq:job:"+parentID+":dependents")).Result()
 	if err != nil || len(childIDs) == 0 {
 		return err
 	}
@@ -113,11 +113,11 @@ func (r *RedisStorage) cascadeDependencyFailure(ctx context.Context, parentID st
 			return err
 		}
 	}
-	return r.client.Del(ctx, "runiq:job:"+parentID+":dependents").Err()
+	return r.client.Del(ctx, r.k("runiq:job:"+parentID+":dependents")).Err()
 }
 
 func (r *RedisStorage) failChildJob(ctx context.Context, childID, parentID string) error {
-	val, err := r.client.HGet(ctx, "runiq:jobs", childID).Result()
+	val, err := r.client.HGet(ctx, r.k("runiq:jobs"), childID).Result()
 	if err != nil {
 		return err
 	}
@@ -133,17 +133,17 @@ func (r *RedisStorage) failChildJob(ctx context.Context, childID, parentID strin
 
 func (r *RedisStorage) execFailChildJob(ctx context.Context, env *JobEnvelope, parentID string) error {
 	pipe := r.client.Pipeline()
-	pipe.LPush(ctx, "runiq:dead:"+env.Queue, env.JobID)
-	pipe.LTrim(ctx, "runiq:dead:"+env.Queue, 0, 49)
-	pipe.HSet(ctx, "runiq:errors", env.JobID, "Dependency "+parentID+" failed")
-	pipe.ZAdd(ctx, "runiq:dead_ttl", redis.Z{
+	pipe.LPush(ctx, r.k("runiq:dead:"+env.Queue), env.JobID)
+	pipe.LTrim(ctx, r.k("runiq:dead:"+env.Queue), 0, 49)
+	pipe.HSet(ctx, r.k("runiq:errors"), env.JobID, "Dependency "+parentID+" failed")
+	pipe.ZAdd(ctx, r.k("runiq:dead_ttl"), redis.Z{
 		Score:  float64(time.Now().Unix()),
 		Member: env.Queue + ":" + env.JobID,
 	})
 	if env.UniqueKey != "" {
-		pipe.Del(ctx, "runiq:unique:"+env.Queue+":"+env.UniqueKey)
+		pipe.Del(ctx, r.k("runiq:unique:"+env.Queue+":"+env.UniqueKey))
 	}
-	pipe.Del(ctx, "runiq:job:"+env.JobID+":dependencies")
+	pipe.Del(ctx, r.k("runiq:job:"+env.JobID+":dependencies"))
 	_, err := pipe.Exec(ctx)
 	return err
 }

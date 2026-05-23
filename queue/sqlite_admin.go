@@ -11,7 +11,7 @@ func (s *SqliteStorage) deleteUniqueLock(ctx context.Context, tx *sql.Tx, queueN
 		return nil
 	}
 	lockKey := queueName + ":" + uniqueKey
-	_, err := tx.ExecContext(ctx, "DELETE FROM runiq_unique_locks WHERE lock_key = ?", lockKey)
+	_, err := tx.ExecContext(ctx, s.q("DELETE FROM runiq_unique_locks WHERE lock_key = ?"), lockKey)
 	return err
 }
 
@@ -31,21 +31,20 @@ func (s *SqliteStorage) updateBatchPending(ctx context.Context, tx *sql.Tx, batc
 	var status, cq, cn string
 	var ca []byte
 	var exp *time.Time
-	err := tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, s.q(`
 		UPDATE runiq_batches SET pending_jobs = pending_jobs - 1 WHERE batch_id = ?
-		RETURNING pending_jobs, status, callback_queue, callback_name, callback_args, expires_at`,
+		RETURNING pending_jobs, status, callback_queue, callback_name, callback_args, expires_at`),
 		batchID,
 	).Scan(&pendingJobs, &status, &cq, &cn, &ca, &exp)
 	if err == nil && exp != nil && time.Now().After(*exp) {
-		_, _ = tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'failed' WHERE batch_id = ?", batchID)
+		_, _ = tx.ExecContext(ctx, s.q("UPDATE runiq_batches SET status = 'failed' WHERE batch_id = ?"), batchID)
 		status = "failed"
 	}
 	return pendingJobs, status, cq, cn, ca, err
 }
 
-
 func (s *SqliteStorage) markBatchCompleted(ctx context.Context, tx *sql.Tx, batchID string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE runiq_batches SET status = 'completed' WHERE batch_id = ?`, batchID)
+	_, err := tx.ExecContext(ctx, s.q(`UPDATE runiq_batches SET status = 'completed' WHERE batch_id = ?`), batchID)
 	return err
 }
 
@@ -54,13 +53,13 @@ func (s *SqliteStorage) enqueueCallback(ctx context.Context, tx *sql.Tx, queue, 
 	query := `
 		INSERT INTO runiq_jobs (job_id, queue, name, args, status, attempts, max_attempts, run_at)
 		VALUES (?, ?, ?, ?, 'pending', 0, 3, CURRENT_TIMESTAMP)`
-	_, err := tx.ExecContext(ctx, query, callbackJobID, queue, name, args)
+	_, err := tx.ExecContext(ctx, s.q(query), callbackJobID, queue, name, args)
 	return err
 }
 
 func (s *SqliteStorage) Ack(ctx context.Context, jobID string) error {
 	var uniqueKey, queueName, batchID string
-	err := s.db.QueryRowContext(ctx, "SELECT unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = ?", jobID).Scan(&uniqueKey, &queueName, &batchID)
+	err := s.db.QueryRowContext(ctx, s.q("SELECT unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = ?"), jobID).Scan(&uniqueKey, &queueName, &batchID)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
@@ -77,7 +76,7 @@ func (s *SqliteStorage) Ack(ctx context.Context, jobID string) error {
 
 func (s *SqliteStorage) performAck(ctx context.Context, tx *sql.Tx, jobID, queueName, uniqueKey, batchID string) error {
 	query := "UPDATE runiq_jobs SET status = 'processed', locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?"
-	if _, err := tx.ExecContext(ctx, query, jobID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q(query), jobID); err != nil {
 		return err
 	}
 	if err := s.deleteUniqueLock(ctx, tx, queueName, uniqueKey); err != nil {
@@ -96,19 +95,23 @@ func (s *SqliteStorage) Fail(ctx context.Context, jobID string, runErr error) er
 	var attempts, maxAttempts int
 	var uniqueKey, queueName, batchID string
 	query := "SELECT attempts, max_attempts, unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = ?"
-	err := s.db.QueryRowContext(ctx, query, jobID).Scan(&attempts, &maxAttempts, &uniqueKey, &queueName, &batchID)
+	err := s.db.QueryRowContext(ctx, s.q(query), jobID).Scan(&attempts, &maxAttempts, &uniqueKey, &queueName, &batchID)
 	if err != nil {
 		return err
 	}
-	if maxAttempts <= 0 {
-		maxAttempts = 3
-	}
+	return s.beginAndPerformFail(ctx, jobID, runErr.Error(), attempts, maxAttempts, uniqueKey, queueName, batchID)
+}
+
+func (s *SqliteStorage) beginAndPerformFail(ctx context.Context, jobID, errMsg string, attempts, maxAttempts int, uniqueKey, queueName, batchID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := s.performFail(ctx, tx, jobID, runErr.Error(), attempts, maxAttempts, uniqueKey, queueName, batchID); err != nil {
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	if err = s.performFail(ctx, tx, jobID, errMsg, attempts, maxAttempts, uniqueKey, queueName, batchID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -121,7 +124,7 @@ func (s *SqliteStorage) performFail(ctx context.Context, tx *sql.Tx, jobID, errM
 			UPDATE runiq_jobs
 			SET status = 'pending', attempts = attempts + 1, run_at = ?, error_message = ?, locked_at = NULL, updated_at = CURRENT_TIMESTAMP
 			WHERE job_id = ?`
-		_, err := tx.ExecContext(ctx, query, nextRun, errMsg, jobID)
+		_, err := tx.ExecContext(ctx, s.q(query), nextRun, errMsg, jobID)
 		return err
 	}
 	return s.transitionToDead(ctx, tx, jobID, errMsg, uniqueKey, queueName, batchID)
@@ -129,7 +132,7 @@ func (s *SqliteStorage) performFail(ctx context.Context, tx *sql.Tx, jobID, errM
 
 func (s *SqliteStorage) transitionToDead(ctx context.Context, tx *sql.Tx, jobID, errMsg, uniqueKey, queueName, batchID string) error {
 	query := "UPDATE runiq_jobs SET status = 'dead', error_message = ?, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?"
-	if _, err := tx.ExecContext(ctx, query, errMsg, jobID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q(query), errMsg, jobID); err != nil {
 		return err
 	}
 	if err := s.deleteUniqueLock(ctx, tx, queueName, uniqueKey); err != nil {
@@ -139,7 +142,7 @@ func (s *SqliteStorage) transitionToDead(ctx context.Context, tx *sql.Tx, jobID,
 		return err
 	}
 	if batchID != "" {
-		_, err := tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'failed' WHERE batch_id = ?", batchID)
+		_, err := tx.ExecContext(ctx, s.q("UPDATE runiq_batches SET status = 'failed' WHERE batch_id = ?"), batchID)
 		return err
 	}
 	return nil
@@ -150,19 +153,19 @@ func (s *SqliteStorage) Retry(ctx context.Context, jobID string) error {
 		UPDATE runiq_jobs
 		SET status = 'pending', attempts = 0, run_at = CURRENT_TIMESTAMP, error_message = ''
 		WHERE job_id = ?`
-	_, err := s.db.ExecContext(ctx, query, jobID)
+	_, err := s.db.ExecContext(ctx, s.q(query), jobID)
 	return err
 }
 
 func (s *SqliteStorage) Cancel(ctx context.Context, jobID string) error {
 	var uniqueKey, queueName string
-	_ = s.db.QueryRowContext(ctx, "SELECT unique_key, queue FROM runiq_jobs WHERE job_id = ?", jobID).Scan(&uniqueKey, &queueName)
+	_ = s.db.QueryRowContext(ctx, s.q("SELECT unique_key, queue FROM runiq_jobs WHERE job_id = ?"), jobID).Scan(&uniqueKey, &queueName)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM runiq_jobs WHERE job_id = ?", jobID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q("DELETE FROM runiq_jobs WHERE job_id = ?"), jobID); err != nil {
 		return err
 	}
 	if err := s.deleteUniqueLock(ctx, tx, queueName, uniqueKey); err != nil {
@@ -180,10 +183,10 @@ func (s *SqliteStorage) ClearQueue(ctx context.Context, queue string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM runiq_jobs WHERE queue = ?", queue); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q("DELETE FROM runiq_jobs WHERE queue = ?"), queue); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM runiq_unique_locks WHERE lock_key LIKE ?", queue+":%"); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q("DELETE FROM runiq_unique_locks WHERE lock_key LIKE ?"), queue+":%"); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -212,7 +215,7 @@ func (s *SqliteStorage) fetchQueueStats(ctx context.Context, stats *Stats) (map[
 		SELECT queue, status, COUNT(*)
 		FROM runiq_jobs
 		GROUP BY queue, status`
-	rows, err := s.db.QueryContext(ctx, query)
+	rows, err := s.db.QueryContext(ctx, s.q(query))
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +237,7 @@ func (s *SqliteStorage) scanQueueStatsRows(rows *sql.Rows, stats *Stats) (map[st
 }
 
 func (s *SqliteStorage) applyPausedQueues(ctx context.Context, queueMap map[string]*QueueStats) {
-	rows, err := s.db.QueryContext(ctx, "SELECT queue FROM runiq_paused_queues")
+	rows, err := s.db.QueryContext(ctx, s.q("SELECT queue FROM runiq_paused_queues"))
 	if err != nil {
 		return
 	}
@@ -262,7 +265,7 @@ func (s *SqliteStorage) fetchRecentJobs(ctx context.Context, stats *Stats) error
 		FROM runiq_jobs
 		ORDER BY created_at DESC
 		LIMIT 100`
-	rows, err := s.db.QueryContext(ctx, query)
+	rows, err := s.db.QueryContext(ctx, s.q(query))
 	if err != nil {
 		return err
 	}
@@ -296,7 +299,7 @@ func (s *SqliteStorage) loadActiveProcesses(ctx context.Context, stats *Stats) {
 func (s *SqliteStorage) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
 	var exists bool
 	query := "SELECT EXISTS(SELECT 1 FROM runiq_paused_queues WHERE queue = ?)"
-	err := s.db.QueryRowContext(ctx, query, queue).Scan(&exists)
+	err := s.db.QueryRowContext(ctx, s.q(query), queue).Scan(&exists)
 	return exists, err
 }
 
@@ -305,13 +308,13 @@ func (s *SqliteStorage) PauseQueue(ctx context.Context, queue string) error {
 		INSERT INTO runiq_paused_queues (queue)
 		VALUES (?)
 		ON CONFLICT (queue) DO NOTHING`
-	_, err := s.db.ExecContext(ctx, query, queue)
+	_, err := s.db.ExecContext(ctx, s.q(query), queue)
 	return err
 }
 
 func (s *SqliteStorage) ResumeQueue(ctx context.Context, queue string) error {
 	query := "DELETE FROM runiq_paused_queues WHERE queue = ?"
-	_, err := s.db.ExecContext(ctx, query, queue)
+	_, err := s.db.ExecContext(ctx, s.q(query), queue)
 	return err
 }
 
@@ -342,7 +345,7 @@ func (s *SqliteStorage) fetchCronJobs(ctx context.Context, stats *Stats) error {
 }
 
 func (s *SqliteStorage) loadStaticCrons(ctx context.Context, m map[string]CronJobDetail) {
-	rows, err := s.db.QueryContext(ctx, "SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs")
+	rows, err := s.db.QueryContext(ctx, s.q("SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs"))
 	if err != nil {
 		return
 	}
@@ -356,7 +359,7 @@ func (s *SqliteStorage) loadStaticCrons(ctx context.Context, m map[string]CronJo
 }
 
 func (s *SqliteStorage) loadDynamicCrons(ctx context.Context, m map[string]CronJobDetail) {
-	rows, err := s.db.QueryContext(ctx, "SELECT name, spec, queue, payload, timezone, paused FROM runiq_cron_schedules")
+	rows, err := s.db.QueryContext(ctx, s.q("SELECT name, spec, queue, payload, timezone, paused FROM runiq_cron_schedules"))
 	if err != nil {
 		return
 	}
@@ -378,10 +381,9 @@ func (s *SqliteStorage) FailExpiredBatches(ctx context.Context) error {
 		WHERE status IN ('open', 'sealed')
 		  AND expires_at IS NOT NULL
 		  AND expires_at < ?`
-	_, err := s.db.ExecContext(ctx, query, time.Now().UTC())
+	_, err := s.db.ExecContext(ctx, s.q(query), time.Now().UTC())
 	return err
 }
-
 
 func (s *SqliteStorage) RegisterCronJobs(ctx context.Context, crons []CronJob) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -406,13 +408,12 @@ func (s *SqliteStorage) insertCronJobsTx(ctx context.Context, tx *sql.Tx, crons 
 			timezone = excluded.timezone,
 			updated_at = CURRENT_TIMESTAMP`
 	for _, c := range crons {
-		if _, err := tx.ExecContext(ctx, query, c.Name, c.Spec, c.Queue, string(c.Payload), c.Timezone); err != nil {
+		if _, err := tx.ExecContext(ctx, s.q(query), c.Name, c.Spec, c.Queue, string(c.Payload), c.Timezone); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-
 
 func (s *SqliteStorage) GetJobDetail(ctx context.Context, jobID string) (*JobEnvelope, error) {
 	var env JobEnvelope
@@ -421,7 +422,7 @@ func (s *SqliteStorage) GetJobDetail(ctx context.Context, jobID string) (*JobEnv
 	query := `
 		SELECT job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id, run_at
 		FROM runiq_jobs WHERE job_id = ?`
-	err := s.db.QueryRowContext(ctx, query, jobID).Scan(
+	err := s.db.QueryRowContext(ctx, s.q(query), jobID).Scan(
 		&env.JobID, &env.Queue, &env.Name, &env.Args, &traceID, &spanID,
 		&env.Attempts, &env.MaxAttempts, &env.UniqueKey, &env.BatchID, &runAt,
 	)
@@ -441,18 +442,19 @@ func (s *SqliteStorage) RetryAllFailed(ctx context.Context) error {
 		UPDATE runiq_jobs
 		SET status = 'pending', attempts = 0, run_at = CURRENT_TIMESTAMP, error_message = ''
 		WHERE status IN ('dead', 'failed')`
-	_, err := s.db.ExecContext(ctx, query)
+	_, err := s.db.ExecContext(ctx, s.q(query))
 	return err
 }
 
 func (s *SqliteStorage) PurgeAllFailed(ctx context.Context) error {
 	query := "DELETE FROM runiq_jobs WHERE status IN ('dead', 'failed')"
-	_, err := s.db.ExecContext(ctx, query)
+	_, err := s.db.ExecContext(ctx, s.q(query))
 	return err
 }
 
 // Ping checks SQLite connection health.
 func (s *SqliteStorage) Ping(ctx context.Context) error {
+	// Check database connectivity
 	return s.db.PingContext(ctx)
 }
 
@@ -460,7 +462,6 @@ func (s *SqliteStorage) Ping(ctx context.Context) error {
 func (s *SqliteStorage) PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error {
 	cutoff := time.Now().Add(-ttl)
 	query := "DELETE FROM runiq_jobs WHERE status = 'dead' AND updated_at < ?"
-	_, err := s.db.ExecContext(ctx, query, cutoff)
+	_, err := s.db.ExecContext(ctx, s.q(query), cutoff)
 	return err
 }
-

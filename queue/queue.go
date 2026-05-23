@@ -3,6 +3,8 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"time"
 )
 
@@ -45,12 +47,13 @@ type JobDetail struct {
 
 // ProcessInfo represents metadata of an active worker pool process.
 type ProcessInfo struct {
-	Queues         []string  `json:"queues"`
 	HeartbeatAt    time.Time `json:"heartbeat_at"`
+	Queues         []string  `json:"queues"`
 	ProcessID      string    `json:"process_id"`
 	Concurrency    int       `json:"concurrency"`
 	MinConcurrency int       `json:"min_concurrency"`
 	MaxConcurrency int       `json:"max_concurrency"`
+	IsLeader       bool      `json:"is_leader"`
 }
 
 // QueueStats holds job counts grouped by queue.
@@ -222,6 +225,9 @@ type WorkerPoolStorage interface {
 	PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error
 	FailExpiredBatches(ctx context.Context) error
 	GetCronSchedules(ctx context.Context) ([]CronJob, error)
+	AcquireLeader(ctx context.Context, clientID string, ttl time.Duration) (bool, error)
+	ReleaseLeader(ctx context.Context, clientID string) error
+	ArchiveJobs(ctx context.Context, age time.Duration) (int64, error)
 }
 
 // ClientStorage is the storage interface required by Client.
@@ -315,4 +321,41 @@ func (d *defaultTracer) ExtractTrace(ctx context.Context) (string, string) { ret
 func (d *defaultTracer) InjectTrace(ctx context.Context, traceID, spanID string) context.Context { return ctx }
 func (d *defaultTracer) RecordLatency(ctx context.Context, name string, duration time.Duration, tags map[string]string) {}
 func (d *defaultTracer) IncrementCounter(ctx context.Context, name string, tags map[string]string) {}
+
+// Namespacer defines the interface for storage backends that support namespaces.
+type Namespacer interface {
+	SetNamespace(ns string)
+}
+
+// StorageFactory defines a function that takes a connection/configuration and returns a storage driver.
+type StorageFactory func(conn interface{}) (interface{}, error)
+
+var (
+	driversMu sync.RWMutex
+	drivers   = make(map[string]StorageFactory)
+)
+
+// RegisterStorageDriver registers a storage factory under a specific name.
+func RegisterStorageDriver(name string, factory StorageFactory) {
+	driversMu.Lock()
+	defer driversMu.Unlock()
+	if factory == nil {
+		panic("queue: RegisterStorageDriver factory is nil")
+	}
+	if _, dup := drivers[name]; dup {
+		panic("queue: RegisterStorageDriver called twice for driver " + name)
+	}
+	drivers[name] = factory
+}
+
+// OpenStorage creates a new storage instance using the registered factory.
+func OpenStorage(name string, conn interface{}) (interface{}, error) {
+	driversMu.RLock()
+	factory, ok := drivers[name]
+	driversMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("queue: unknown storage driver %q (forgotten import?)", name)
+	}
+	return factory(conn)
+}
 

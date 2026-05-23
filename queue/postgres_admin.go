@@ -11,7 +11,7 @@ func (p *PostgresStorage) deleteUniqueLock(ctx context.Context, tx *sql.Tx, queu
 		return nil
 	}
 	lockKey := queueName + ":" + uniqueKey
-	_, err := tx.ExecContext(ctx, "DELETE FROM runiq_unique_locks WHERE lock_key = $1", lockKey)
+	_, err := tx.ExecContext(ctx, p.q("DELETE FROM runiq_unique_locks WHERE lock_key = $1"), lockKey)
 	return err
 }
 
@@ -31,20 +31,20 @@ func (p *PostgresStorage) updateBatchPending(ctx context.Context, tx *sql.Tx, ba
 	var status, cq, cn string
 	var ca []byte
 	var exp *time.Time
-	err := tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, p.q(`
 		UPDATE runiq_batches SET pending_jobs = pending_jobs - 1 WHERE batch_id = $1
-		RETURNING pending_jobs, status, callback_queue, callback_name, callback_args, expires_at`,
+		RETURNING pending_jobs, status, callback_queue, callback_name, callback_args, expires_at`),
 		batchID,
 	).Scan(&pendingJobs, &status, &cq, &cn, &ca, &exp)
 	if err == nil && exp != nil && time.Now().After(*exp) {
-		_, _ = tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'failed' WHERE batch_id = $1", batchID)
+		_, _ = tx.ExecContext(ctx, p.q("UPDATE runiq_batches SET status = 'failed' WHERE batch_id = $1"), batchID)
 		status = "failed"
 	}
 	return pendingJobs, status, cq, cn, ca, err
 }
 
 func (p *PostgresStorage) markBatchCompleted(ctx context.Context, tx *sql.Tx, batchID string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE runiq_batches SET status = 'completed' WHERE batch_id = $1`, batchID)
+	_, err := tx.ExecContext(ctx, p.q(`UPDATE runiq_batches SET status = 'completed' WHERE batch_id = $1`), batchID)
 	return err
 }
 
@@ -53,13 +53,13 @@ func (p *PostgresStorage) enqueueCallback(ctx context.Context, tx *sql.Tx, queue
 	query := `
 		INSERT INTO runiq_jobs (job_id, queue, name, args, status, attempts, max_attempts, run_at)
 		VALUES ($1, $2, $3, $4, 'pending', 0, 3, CURRENT_TIMESTAMP)`
-	_, err := tx.ExecContext(ctx, query, callbackJobID, queue, name, args)
+	_, err := tx.ExecContext(ctx, p.q(query), callbackJobID, queue, name, args)
 	return err
 }
 
 func (p *PostgresStorage) Ack(ctx context.Context, jobID string) error {
 	var uniqueKey, queueName, batchID string
-	_ = p.db.QueryRowContext(ctx, "SELECT unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&uniqueKey, &queueName, &batchID)
+	_ = p.db.QueryRowContext(ctx, p.q("SELECT unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = $1"), jobID).Scan(&uniqueKey, &queueName, &batchID)
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -73,7 +73,7 @@ func (p *PostgresStorage) Ack(ctx context.Context, jobID string) error {
 
 func (p *PostgresStorage) performAck(ctx context.Context, tx *sql.Tx, jobID, queueName, uniqueKey, batchID string) error {
 	query := "UPDATE runiq_jobs SET status = 'processed', locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE job_id = $1"
-	if _, err := tx.ExecContext(ctx, query, jobID); err != nil {
+	if _, err := tx.ExecContext(ctx, p.q(query), jobID); err != nil {
 		return err
 	}
 	if err := p.deleteUniqueLock(ctx, tx, queueName, uniqueKey); err != nil {
@@ -95,7 +95,7 @@ func (p *PostgresStorage) finishAck(ctx context.Context, tx *sql.Tx, batchID str
 func (p *PostgresStorage) Fail(ctx context.Context, jobID string, runErr error) error {
 	var attempts, maxAttempts int
 	var uniqueKey, queueName, batchID string
-	err := p.db.QueryRowContext(ctx, "SELECT attempts, max_attempts, unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&attempts, &maxAttempts, &uniqueKey, &queueName, &batchID)
+	err := p.db.QueryRowContext(ctx, p.q("SELECT attempts, max_attempts, unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = $1"), jobID).Scan(&attempts, &maxAttempts, &uniqueKey, &queueName, &batchID)
 	if err != nil {
 		return err
 	}
@@ -118,7 +118,7 @@ func (p *PostgresStorage) performFail(ctx context.Context, tx *sql.Tx, jobID, er
 	if attempts+1 < limit {
 		nextRun := time.Now().Add(computeBackoffDelay(attempts))
 		query := "UPDATE runiq_jobs SET status = 'pending', attempts = attempts + 1, run_at = $2, error_message = $3, locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE job_id = $1"
-		_, err := tx.ExecContext(ctx, query, jobID, nextRun, errMsg)
+		_, err := tx.ExecContext(ctx, p.q(query), jobID, nextRun, errMsg)
 		return err
 	}
 	return p.transitionToDead(ctx, tx, jobID, errMsg, uniqueKey, queueName, batchID)
@@ -126,7 +126,7 @@ func (p *PostgresStorage) performFail(ctx context.Context, tx *sql.Tx, jobID, er
 
 func (p *PostgresStorage) transitionToDead(ctx context.Context, tx *sql.Tx, jobID, errMsg, uniqueKey, queueName, batchID string) error {
 	query := "UPDATE runiq_jobs SET status = 'dead', error_message = $2, attempts = attempts + 1, locked_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE job_id = $1"
-	if _, err := tx.ExecContext(ctx, query, jobID, errMsg); err != nil {
+	if _, err := tx.ExecContext(ctx, p.q(query), jobID, errMsg); err != nil {
 		return err
 	}
 	if err := p.deleteUniqueLock(ctx, tx, queueName, uniqueKey); err != nil {
@@ -136,7 +136,7 @@ func (p *PostgresStorage) transitionToDead(ctx context.Context, tx *sql.Tx, jobI
 		return err
 	}
 	if batchID != "" {
-		_, err := tx.ExecContext(ctx, "UPDATE runiq_batches SET status = 'failed' WHERE batch_id = $1", batchID)
+		_, err := tx.ExecContext(ctx, p.q("UPDATE runiq_batches SET status = 'failed' WHERE batch_id = $1"), batchID)
 		return err
 	}
 	return nil
@@ -147,19 +147,19 @@ func (p *PostgresStorage) Retry(ctx context.Context, jobID string) error {
 		UPDATE runiq_jobs
 		SET status = 'pending', attempts = 0, run_at = CURRENT_TIMESTAMP, error_message = ''
 		WHERE job_id = $1`
-	_, err := p.db.ExecContext(ctx, query, jobID)
+	_, err := p.db.ExecContext(ctx, p.q(query), jobID)
 	return err
 }
 
 func (p *PostgresStorage) Cancel(ctx context.Context, jobID string) error {
 	var uniqueKey, queueName string
-	_ = p.db.QueryRowContext(ctx, "SELECT unique_key, queue FROM runiq_jobs WHERE job_id = $1", jobID).Scan(&uniqueKey, &queueName)
+	_ = p.db.QueryRowContext(ctx, p.q("SELECT unique_key, queue FROM runiq_jobs WHERE job_id = $1"), jobID).Scan(&uniqueKey, &queueName)
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM runiq_jobs WHERE job_id = $1", jobID); err != nil {
+	if _, err := tx.ExecContext(ctx, p.q("DELETE FROM runiq_jobs WHERE job_id = $1"), jobID); err != nil {
 		return err
 	}
 	if err := p.deleteUniqueLock(ctx, tx, queueName, uniqueKey); err != nil {
@@ -178,12 +178,12 @@ func (p *PostgresStorage) ClearQueue(ctx context.Context, queue string) error {
 	}
 	defer tx.Rollback()
 
-	_, err = tx.ExecContext(ctx, "DELETE FROM runiq_jobs WHERE queue = $1", queue)
+	_, err = tx.ExecContext(ctx, p.q("DELETE FROM runiq_jobs WHERE queue = $1"), queue)
 	if err != nil {
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, "DELETE FROM runiq_unique_locks WHERE lock_key LIKE $1", queue+":%")
+	_, err = tx.ExecContext(ctx, p.q("DELETE FROM runiq_unique_locks WHERE lock_key LIKE $1"), queue+":%")
 	if err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func (p *PostgresStorage) fetchQueueStats(ctx context.Context, stats *Stats) (ma
 		SELECT queue, status, COUNT(*)
 		FROM runiq_jobs
 		GROUP BY queue, status`
-	rows, err := p.db.QueryContext(ctx, query)
+	rows, err := p.db.QueryContext(ctx, p.q(query))
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +236,7 @@ func (p *PostgresStorage) scanQueueStatsRows(rows *sql.Rows, stats *Stats) (map[
 }
 
 func (p *PostgresStorage) applyPausedQueues(ctx context.Context, queueMap map[string]*QueueStats) {
-	rows, err := p.db.QueryContext(ctx, "SELECT queue FROM runiq_paused_queues")
+	rows, err := p.db.QueryContext(ctx, p.q("SELECT queue FROM runiq_paused_queues"))
 	if err != nil {
 		return
 	}
@@ -264,7 +264,7 @@ func (p *PostgresStorage) fetchRecentJobs(ctx context.Context, stats *Stats) err
 		FROM runiq_jobs
 		ORDER BY created_at DESC
 		LIMIT 100`
-	rows, err := p.db.QueryContext(ctx, query)
+	rows, err := p.db.QueryContext(ctx, p.q(query))
 	if err != nil {
 		return err
 	}
@@ -298,7 +298,7 @@ func (p *PostgresStorage) loadActiveProcesses(ctx context.Context, stats *Stats)
 func (p *PostgresStorage) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
 	var exists bool
 	query := "SELECT EXISTS(SELECT 1 FROM runiq_paused_queues WHERE queue = $1)"
-	err := p.db.QueryRowContext(ctx, query, queue).Scan(&exists)
+	err := p.db.QueryRowContext(ctx, p.q(query), queue).Scan(&exists)
 	return exists, err
 }
 
@@ -307,35 +307,27 @@ func (p *PostgresStorage) PauseQueue(ctx context.Context, queue string) error {
 		INSERT INTO runiq_paused_queues (queue)
 		VALUES ($1)
 		ON CONFLICT (queue) DO NOTHING`
-	_, err := p.db.ExecContext(ctx, query, queue)
+	_, err := p.db.ExecContext(ctx, p.q(query), queue)
 	return err
 }
 
 func (p *PostgresStorage) ResumeQueue(ctx context.Context, queue string) error {
 	query := "DELETE FROM runiq_paused_queues WHERE queue = $1"
-	_, err := p.db.ExecContext(ctx, query, queue)
+	_, err := p.db.ExecContext(ctx, p.q(query), queue)
 	return err
 }
 
 func (p *PostgresStorage) accumulateStats(stats *Stats, queueMap map[string]*QueueStats, qName, status string, count int64) {
-	qs, ok := queueMap[qName]
-	if !ok {
-		qs = &QueueStats{Name: qName}
-		queueMap[qName] = qs
-	}
+	qs := p.getOrCreateQueueStats(queueMap, qName)
 	switch status {
 	case "pending":
-		stats.Pending += count
-		qs.Pending += count
+		stats.Pending, qs.Pending = stats.Pending+count, qs.Pending+count
 	case "running":
-		stats.Running += count
-		qs.Running += count
+		stats.Running, qs.Running = stats.Running+count, qs.Running+count
 	case "failed", "dead":
-		stats.Failed += count
-		qs.Failed += count
+		stats.Failed, qs.Failed = stats.Failed+count, qs.Failed+count
 	case "processed":
-		stats.Processed += count
-		qs.Processed += count
+		stats.Processed, qs.Processed = stats.Processed+count, qs.Processed+count
 	}
 }
 
@@ -348,7 +340,7 @@ func (p *PostgresStorage) fetchCronJobs(ctx context.Context, stats *Stats) error
 }
 
 func (p *PostgresStorage) loadStaticCrons(ctx context.Context, m map[string]CronJobDetail) {
-	rows, err := p.db.QueryContext(ctx, "SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs")
+	rows, err := p.db.QueryContext(ctx, p.q("SELECT name, expression, queue, payload, timezone FROM runiq_cron_jobs"))
 	if err != nil {
 		return
 	}
@@ -362,7 +354,7 @@ func (p *PostgresStorage) loadStaticCrons(ctx context.Context, m map[string]Cron
 }
 
 func (p *PostgresStorage) loadDynamicCrons(ctx context.Context, m map[string]CronJobDetail) {
-	rows, err := p.db.QueryContext(ctx, "SELECT name, spec, queue, payload, timezone, paused FROM runiq_cron_schedules")
+	rows, err := p.db.QueryContext(ctx, p.q("SELECT name, spec, queue, payload, timezone, paused FROM runiq_cron_schedules"))
 	if err != nil {
 		return
 	}
@@ -385,7 +377,7 @@ func (p *PostgresStorage) FailExpiredBatches(ctx context.Context) error {
 		WHERE status IN ('open', 'sealed')
 		  AND expires_at IS NOT NULL
 		  AND expires_at < $1`
-	_, err := p.db.ExecContext(ctx, query, time.Now().UTC())
+	_, err := p.db.ExecContext(ctx, p.q(query), time.Now().UTC())
 	return err
 }
 
@@ -415,7 +407,7 @@ func (p *PostgresStorage) insertCronJobsTx(ctx context.Context, tx *sql.Tx, cron
 			timezone = EXCLUDED.timezone,
 			updated_at = CURRENT_TIMESTAMP`
 	for _, c := range crons {
-		if _, err := tx.ExecContext(ctx, query, c.Name, c.Spec, c.Queue, string(c.Payload), c.Timezone); err != nil {
+		if _, err := tx.ExecContext(ctx, p.q(query), c.Name, c.Spec, c.Queue, string(c.Payload), c.Timezone); err != nil {
 			return err
 		}
 	}
@@ -425,21 +417,16 @@ func (p *PostgresStorage) insertCronJobsTx(ctx context.Context, tx *sql.Tx, cron
 func (p *PostgresStorage) GetJobDetail(ctx context.Context, jobID string) (*JobEnvelope, error) {
 	var env JobEnvelope
 	var runAt time.Time
-	var traceID, spanID string
-	query := `
-		SELECT job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id, run_at
-		FROM runiq_jobs WHERE job_id = $1`
-	err := p.db.QueryRowContext(ctx, query, jobID).Scan(
-		&env.JobID, &env.Queue, &env.Name, &env.Args, &traceID, &spanID,
-		&env.Attempts, &env.MaxAttempts, &env.UniqueKey, &env.BatchID, &runAt,
-	)
+	var tID, sID string
+	q := "SELECT job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id, run_at FROM runiq_jobs WHERE job_id = $1"
+	err := p.db.QueryRowContext(ctx, p.q(q), jobID).Scan(&env.JobID, &env.Queue, &env.Name, &env.Args, &tID, &sID, &env.Attempts, &env.MaxAttempts, &env.UniqueKey, &env.BatchID, &runAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	env.TraceContext = TraceContext{TraceID: traceID, SpanID: spanID}
+	env.TraceContext = TraceContext{TraceID: tID, SpanID: sID}
 	env.RunAt = &runAt
 	return &env, nil
 }
@@ -449,26 +436,27 @@ func (p *PostgresStorage) RetryAllFailed(ctx context.Context) error {
 		UPDATE runiq_jobs
 		SET status = 'pending', attempts = 0, run_at = CURRENT_TIMESTAMP, error_message = ''
 		WHERE status IN ('dead', 'failed')`
-	_, err := p.db.ExecContext(ctx, query)
+	_, err := p.db.ExecContext(ctx, p.q(query))
 	return err
 }
 
 func (p *PostgresStorage) PurgeAllFailed(ctx context.Context) error {
 	query := "DELETE FROM runiq_jobs WHERE status IN ('dead', 'failed')"
-	_, err := p.db.ExecContext(ctx, query)
+	_, err := p.db.ExecContext(ctx, p.q(query))
 	return err
 }
 
 // Ping checks PostgreSQL connection health.
 func (p *PostgresStorage) Ping(ctx context.Context) error {
-	return p.db.PingContext(ctx)
+	err := p.db.PingContext(ctx)
+	return err
 }
 
 // PurgeExpiredDLQ deletes dead jobs older than the given TTL.
 func (p *PostgresStorage) PurgeExpiredDLQ(ctx context.Context, ttl time.Duration) error {
 	cutoff := time.Now().Add(-ttl)
 	query := "DELETE FROM runiq_jobs WHERE status = 'dead' AND updated_at < $1"
-	_, err := p.db.ExecContext(ctx, query, cutoff)
+	_, err := p.db.ExecContext(ctx, p.q(query), cutoff)
 	return err
 }
 

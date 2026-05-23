@@ -60,13 +60,13 @@ func (p *PostgresStorage) GetJobs(ctx context.Context, q, status string, page, l
 	where, args := buildPostgresSearchQuery(q, status)
 	var total int64
 	countQuery := "SELECT COUNT(*) FROM runiq_jobs " + where
-	if err := p.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := p.db.QueryRowContext(ctx, p.q(countQuery), args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	selectQuery := "SELECT job_id, queue, name, status, trace_id, error_message, created_at FROM runiq_jobs " +
 		where + " ORDER BY created_at DESC LIMIT $" + strconv.Itoa(len(args)+1) + " OFFSET $" + strconv.Itoa(len(args)+2)
 	selectArgs := append(args, limit, offset)
-	rows, err := p.db.QueryContext(ctx, selectQuery, selectArgs...)
+	rows, err := p.db.QueryContext(ctx, p.q(selectQuery), selectArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -87,7 +87,7 @@ func (p *PostgresStorage) BulkRetry(ctx context.Context, jobIDs []string) error 
 	defer tx.Rollback()
 	query := `UPDATE runiq_jobs SET status = 'pending', attempts = 0, run_at = CURRENT_TIMESTAMP, error_message = '' WHERE job_id = $1`
 	for _, id := range jobIDs {
-		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+		if _, err := tx.ExecContext(ctx, p.q(query), id); err != nil {
 			return err
 		}
 	}
@@ -96,11 +96,11 @@ func (p *PostgresStorage) BulkRetry(ctx context.Context, jobIDs []string) error 
 
 func (p *PostgresStorage) cancelOneJob(ctx context.Context, tx *sql.Tx, id string) error {
 	var uniqueKey, queueName string
-	err := tx.QueryRowContext(ctx, "SELECT unique_key, queue FROM runiq_jobs WHERE job_id = $1", id).Scan(&uniqueKey, &queueName)
+	err := tx.QueryRowContext(ctx, p.q("SELECT unique_key, queue FROM runiq_jobs WHERE job_id = $1"), id).Scan(&uniqueKey, &queueName)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM runiq_jobs WHERE job_id = $1", id); err != nil {
+	if _, err := tx.ExecContext(ctx, p.q("DELETE FROM runiq_jobs WHERE job_id = $1"), id); err != nil {
 		return err
 	}
 	return p.deleteUniqueLock(ctx, tx, queueName, uniqueKey)
@@ -136,7 +136,7 @@ func (p *PostgresStorage) BulkPurge(ctx context.Context, jobIDs []string) error 
 	defer tx.Rollback()
 	query := "DELETE FROM runiq_jobs WHERE job_id = $1"
 	for _, id := range jobIDs {
-		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+		if _, err := tx.ExecContext(ctx, p.q(query), id); err != nil {
 			return err
 		}
 	}

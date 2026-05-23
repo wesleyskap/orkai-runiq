@@ -68,12 +68,12 @@ func (s *SqliteStorage) GetJobs(ctx context.Context, q, status string, page, lim
 	where, args := buildSearchQuery(q, status)
 	var total int64
 	countQuery := "SELECT COUNT(*) FROM runiq_jobs " + where
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.q(countQuery), args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	selectQuery := "SELECT job_id, queue, name, status, trace_id, error_message, created_at FROM runiq_jobs " + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	selectArgs := append(args, limit, offset)
-	rows, err := s.db.QueryContext(ctx, selectQuery, selectArgs...)
+	rows, err := s.db.QueryContext(ctx, s.q(selectQuery), selectArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -94,7 +94,7 @@ func (s *SqliteStorage) BulkRetry(ctx context.Context, jobIDs []string) error {
 	defer tx.Rollback()
 	query := `UPDATE runiq_jobs SET status = 'pending', attempts = 0, run_at = CURRENT_TIMESTAMP, error_message = '' WHERE job_id = ?`
 	for _, id := range jobIDs {
-		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+		if _, err := tx.ExecContext(ctx, s.q(query), id); err != nil {
 			return err
 		}
 	}
@@ -103,11 +103,11 @@ func (s *SqliteStorage) BulkRetry(ctx context.Context, jobIDs []string) error {
 
 func (s *SqliteStorage) cancelOneJob(ctx context.Context, tx *sql.Tx, id string) error {
 	var uniqueKey, queueName string
-	err := tx.QueryRowContext(ctx, "SELECT unique_key, queue FROM runiq_jobs WHERE job_id = ?", id).Scan(&uniqueKey, &queueName)
+	err := tx.QueryRowContext(ctx, s.q("SELECT unique_key, queue FROM runiq_jobs WHERE job_id = ?"), id).Scan(&uniqueKey, &queueName)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM runiq_jobs WHERE job_id = ?", id); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q("DELETE FROM runiq_jobs WHERE job_id = ?"), id); err != nil {
 		return err
 	}
 	return s.deleteUniqueLock(ctx, tx, queueName, uniqueKey)
@@ -143,7 +143,7 @@ func (s *SqliteStorage) BulkPurge(ctx context.Context, jobIDs []string) error {
 	defer tx.Rollback()
 	query := "DELETE FROM runiq_jobs WHERE job_id = ?"
 	for _, id := range jobIDs {
-		if _, err := tx.ExecContext(ctx, query, id); err != nil {
+		if _, err := tx.ExecContext(ctx, s.q(query), id); err != nil {
 			return err
 		}
 	}

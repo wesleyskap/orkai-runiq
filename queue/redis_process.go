@@ -15,8 +15,8 @@ func (r *RedisStorage) RegisterProcess(ctx context.Context, info *ProcessInfo) e
 		return err
 	}
 	pipe := r.client.Pipeline()
-	pipe.HSet(ctx, "runiq:processes", info.ProcessID, data)
-	pipe.ZAdd(ctx, "runiq:processes:heartbeat", redis.Z{
+	pipe.HSet(ctx, r.k("runiq:processes"), info.ProcessID, data)
+	pipe.ZAdd(ctx, r.k("runiq:processes:heartbeat"), redis.Z{
 		Score:  float64(info.HeartbeatAt.Unix()),
 		Member: info.ProcessID,
 	})
@@ -26,74 +26,82 @@ func (r *RedisStorage) RegisterProcess(ctx context.Context, info *ProcessInfo) e
 
 func (r *RedisStorage) HeartbeatProcess(ctx context.Context, processID string) error {
 	now := time.Now()
-	err := r.client.ZAdd(ctx, "runiq:processes:heartbeat", redis.Z{
-		Score:  float64(now.Unix()),
-		Member: processID,
-	}).Err()
+	err := r.client.ZAdd(ctx, r.k("runiq:processes:heartbeat"), redis.Z{Score: float64(now.Unix()), Member: processID}).Err()
 	if err != nil {
 		return err
 	}
-
-	data, err := r.client.HGet(ctx, "runiq:processes", processID).Result()
-	if err == redis.Nil {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var info ProcessInfo
-	if err := json.Unmarshal([]byte(data), &info); err != nil {
+	info, err := r.getProcessInfo(ctx, processID)
+	if err != nil || info == nil {
 		return err
 	}
 	info.HeartbeatAt = now
-	updatedData, err := json.Marshal(&info)
+	updated, err := json.Marshal(info)
 	if err != nil {
 		return err
 	}
-	return r.client.HSet(ctx, "runiq:processes", processID, updatedData).Err()
+	return r.client.HSet(ctx, r.k("runiq:processes"), processID, updated).Err()
+}
+
+func (r *RedisStorage) getProcessInfo(ctx context.Context, processID string) (*ProcessInfo, error) {
+	data, err := r.client.HGet(ctx, r.k("runiq:processes"), processID).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var info ProcessInfo
+	err = json.Unmarshal([]byte(data), &info)
+	return &info, err
 }
 
 func (r *RedisStorage) GetActiveProcesses(ctx context.Context) ([]ProcessInfo, error) {
-	now := time.Now()
-	deadTimeLimit := now.Add(-15 * time.Second).Unix()
+	if err := r.cleanupDeadProcesses(ctx); err != nil {
+		return nil, err
+	}
+	activeIDs, err := r.client.ZRange(ctx, r.k("runiq:processes:heartbeat"), 0, -1).Result()
+	if err != nil || len(activeIDs) == 0 {
+		return nil, err
+	}
+	raws, err := r.client.HMGet(ctx, r.k("runiq:processes"), activeIDs...).Result()
+	if err != nil {
+		return nil, err
+	}
+	leaderID, _ := r.client.Get(ctx, r.k("runiq:leader")).Result()
+	return r.parseActiveProcesses(raws, leaderID), nil
+}
 
-	deadIDs, err := r.client.ZRangeByScore(ctx, "runiq:processes:heartbeat", &redis.ZRangeBy{
+func (r *RedisStorage) cleanupDeadProcesses(ctx context.Context) error {
+	limit := time.Now().Add(-15 * time.Second).Unix()
+	dead, err := r.client.ZRangeByScore(ctx, r.k("runiq:processes:heartbeat"), &redis.ZRangeBy{
 		Min: "-inf",
-		Max: fmt.Sprintf("%d", deadTimeLimit),
+		Max: fmt.Sprintf("%d", limit),
 	}).Result()
-	if err == nil && len(deadIDs) > 0 {
+	if err == nil && len(dead) > 0 {
 		pipe := r.client.Pipeline()
-		pipe.ZRem(ctx, "runiq:processes:heartbeat", r.sliceToInterfaces(deadIDs)...)
-		pipe.HDel(ctx, "runiq:processes", deadIDs...)
-		_, _ = pipe.Exec(ctx)
+		pipe.ZRem(ctx, r.k("runiq:processes:heartbeat"), r.sliceToInterfaces(dead)...)
+		pipe.HDel(ctx, r.k("runiq:processes"), dead...)
+		_, err = pipe.Exec(ctx)
 	}
+	return err
+}
 
-	activeIDs, err := r.client.ZRange(ctx, "runiq:processes:heartbeat", 0, -1).Result()
-	if err != nil {
-		return nil, err
-	}
-	if len(activeIDs) == 0 {
-		return nil, nil
-	}
-
-	dataSlice, err := r.client.HMGet(ctx, "runiq:processes", activeIDs...).Result()
-	if err != nil {
-		return nil, err
-	}
-
-	var activeProcesses []ProcessInfo
-	for _, raw := range dataSlice {
+func (r *RedisStorage) parseActiveProcesses(raws []interface{}, leaderID string) []ProcessInfo {
+	var list []ProcessInfo
+	for _, raw := range raws {
 		if raw == nil {
 			continue
 		}
-		strVal, ok := raw.(string)
+		str, ok := raw.(string)
 		if !ok {
 			continue
 		}
 		var info ProcessInfo
-		if err := json.Unmarshal([]byte(strVal), &info); err == nil {
-			activeProcesses = append(activeProcesses, info)
+		if err := json.Unmarshal([]byte(str), &info); err == nil {
+			info.IsLeader = (info.ProcessID == leaderID)
+			list = append(list, info)
 		}
 	}
-	return activeProcesses, nil
+	return list
 }
+

@@ -1,7 +1,9 @@
 package queue
 
 import (
+	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"sort"
 	"time"
@@ -49,6 +51,12 @@ func sortCronJobs(m map[string]CronJobDetail) []CronJobDetail {
 		res = append(res, m[name])
 	}
 	return res
+}
+
+type sqlExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 }
 
 

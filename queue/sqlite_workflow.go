@@ -6,8 +6,6 @@ import (
 )
 
 // EnqueueWorkflow transactionally inserts multiple dependent jobs.
-// Usage example:
-//	err := storage.EnqueueWorkflow(ctx, parentJob, childJob)
 func (s *SqliteStorage) EnqueueWorkflow(ctx context.Context, jobs ...*JobEnvelope) error {
 	if len(jobs) == 0 {
 		return nil
@@ -53,7 +51,7 @@ func (s *SqliteStorage) execInsertJob(ctx context.Context, tx *sql.Tx, job *JobE
 		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
 		ON CONFLICT (job_id) DO UPDATE SET
 			status = ?, attempts = 0, max_attempts = ?, run_at = ?, unique_key = ?, updated_at = CURRENT_TIMESTAMP`
-	_, err := tx.ExecContext(ctx, query,
+	_, err := tx.ExecContext(ctx, s.q(query),
 		job.JobID, job.Queue, job.Name, job.Args,
 		job.TraceContext.TraceID, job.TraceContext.SpanID,
 		status, maxAttempts, runAt, job.UniqueKey,
@@ -67,15 +65,15 @@ func (s *SqliteStorage) insertJobDependencies(ctx context.Context, tx *sql.Tx, j
 		query := `
 			INSERT OR IGNORE INTO runiq_job_dependencies (job_id, parent_job_id)
 			VALUES (?, ?)`
-		if _, err := tx.ExecContext(ctx, query, job.JobID, parentID); err != nil {
+		if _, err := tx.ExecContext(ctx, s.q(query), job.JobID, parentID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func queryChildJobIDs(ctx context.Context, tx *sql.Tx, parentJobID string) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT job_id FROM runiq_job_dependencies WHERE parent_job_id = ?", parentJobID)
+func (s *SqliteStorage) queryChildJobIDs(ctx context.Context, tx *sql.Tx, parentJobID string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, s.q("SELECT job_id FROM runiq_job_dependencies WHERE parent_job_id = ?"), parentJobID)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +90,7 @@ func queryChildJobIDs(ctx context.Context, tx *sql.Tx, parentJobID string) ([]st
 }
 
 func (s *SqliteStorage) cascadeDependencyFailure(ctx context.Context, tx *sql.Tx, failedJobID string) error {
-	childIDs, err := queryChildJobIDs(ctx, tx, failedJobID)
+	childIDs, err := s.queryChildJobIDs(ctx, tx, failedJobID)
 	if err != nil {
 		return err
 	}
@@ -102,7 +100,7 @@ func (s *SqliteStorage) cascadeDependencyFailure(ctx context.Context, tx *sql.Tx
 func (s *SqliteStorage) failChildren(ctx context.Context, tx *sql.Tx, parentID string, childIDs []string) error {
 	for _, cid := range childIDs {
 		var uniqueKey, queueName, batchID string
-		err := tx.QueryRowContext(ctx, "SELECT unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = ?", cid).Scan(&uniqueKey, &queueName, &batchID)
+		err := tx.QueryRowContext(ctx, s.q("SELECT unique_key, queue, batch_id FROM runiq_jobs WHERE job_id = ?"), cid).Scan(&uniqueKey, &queueName, &batchID)
 		if err != nil && err != sql.ErrNoRows {
 			return err
 		}
@@ -110,7 +108,7 @@ func (s *SqliteStorage) failChildren(ctx context.Context, tx *sql.Tx, parentID s
 		if err := s.transitionToDead(ctx, tx, cid, errMsg, uniqueKey, queueName, batchID); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM runiq_job_dependencies WHERE job_id = ?", cid); err != nil {
+		if _, err := tx.ExecContext(ctx, s.q("DELETE FROM runiq_job_dependencies WHERE job_id = ?"), cid); err != nil {
 			return err
 		}
 	}
@@ -118,11 +116,11 @@ func (s *SqliteStorage) failChildren(ctx context.Context, tx *sql.Tx, parentID s
 }
 
 func (s *SqliteStorage) resolveDependencies(ctx context.Context, tx *sql.Tx, parentJobID string) error {
-	childIDs, err := queryChildJobIDs(ctx, tx, parentJobID)
+	childIDs, err := s.queryChildJobIDs(ctx, tx, parentJobID)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM runiq_job_dependencies WHERE parent_job_id = ?", parentJobID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q("DELETE FROM runiq_job_dependencies WHERE parent_job_id = ?"), parentJobID); err != nil {
 		return err
 	}
 	return s.checkBlockedChildren(ctx, tx, childIDs)
@@ -131,12 +129,12 @@ func (s *SqliteStorage) resolveDependencies(ctx context.Context, tx *sql.Tx, par
 func (s *SqliteStorage) checkBlockedChildren(ctx context.Context, tx *sql.Tx, childIDs []string) error {
 	for _, cid := range childIDs {
 		var count int
-		err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM runiq_job_dependencies WHERE job_id = ?", cid).Scan(&count)
+		err := tx.QueryRowContext(ctx, s.q("SELECT COUNT(*) FROM runiq_job_dependencies WHERE job_id = ?"), cid).Scan(&count)
 		if err != nil {
 			return err
 		}
 		if count == 0 {
-			_, err = tx.ExecContext(ctx, "UPDATE runiq_jobs SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE job_id = ?", cid)
+			_, err = tx.ExecContext(ctx, s.q("UPDATE runiq_jobs SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE job_id = ?"), cid)
 			if err != nil {
 				return err
 			}
