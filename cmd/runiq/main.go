@@ -19,7 +19,7 @@ import (
 	_ "github.com/glebarez/go-sqlite"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
-	"github.com/wesleyskap/orkai-runiq/v2/queue"
+	"github.com/wesleyskap/orkai-runiq/v3/queue"
 )
 
 type ShellJob struct{}

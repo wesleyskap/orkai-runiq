@@ -69,7 +69,7 @@ import (
 	_ "github.com/glebarez/go-sqlite" // Pure Go SQLite driver (CGO-free)
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
-	"github.com/wesleyskap/orkai-runiq/v2/queue"
+	"github.com/wesleyskap/orkai-runiq/v3/queue"
 )
 
 func usePostgres(db *sql.DB) *queue.PostgresStorage {
@@ -108,7 +108,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/wesleyskap/orkai-runiq/v2/queue"
+	"github.com/wesleyskap/orkai-runiq/v3/queue"
 )
 
 // 1. Define a job implementing queue.Job
@@ -627,7 +627,7 @@ import (
     "time"
 
     "github.com/wesleyskap/orkai-observability/v2/observability"
-    "github.com/wesleyskap/orkai-runiq/v2/queue"
+    "github.com/wesleyskap/orkai-runiq/v3/queue"
 )
 
 type ObservabilityTracer struct{}
@@ -746,32 +746,32 @@ Since the compiled binary does not have your custom Go job structs compiled in, 
 
 ### Using the CLI in Another Project (As an Imported Package)
 
-If you are using Runiq as a dependency (`go get github.com/wesleyskap/orkai-runiq/v2`) in another project, you do not need to clone the Runiq repository to compile or use the CLI. You can build, install, or execute it directly from Go using the remote module path:
+If you are using Runiq as a dependency (`go get github.com/wesleyskap/orkai-runiq/v3`) in another project, you do not need to clone the Runiq repository to compile or use the CLI. You can build, install, or execute it directly from Go using the remote module path:
 
 #### Option A: Compile the Binary in Your Project
 To build and save the binary inside your project folder:
 * **Linux / macOS:**
   ```bash
-  go build -o runiq github.com/wesleyskap/orkai-runiq/v2/cmd/runiq
+  go build -o runiq github.com/wesleyskap/orkai-runiq/v3/cmd/runiq
   ```
 * **Windows:**
   ```powershell
-  go build -o runiq.exe github.com/wesleyskap/orkai-runiq/v2/cmd/runiq
+  go build -o runiq.exe github.com/wesleyskap/orkai-runiq/v3/cmd/runiq
   ```
 
 > [!NOTE]
-> If Go complains about missing `go.sum` entries for packages like `github.com/glebarez/go-sqlite` or `github.com/lib/pq` (because they are imported by the CLI binary but not by your application library), run `go get github.com/wesleyskap/orkai-runiq/v2/cmd/runiq` first to download and checksum all CLI-specific dependencies.
+> If Go complains about missing `go.sum` entries for packages like `github.com/glebarez/go-sqlite` or `github.com/lib/pq` (because they are imported by the CLI binary but not by your application library), run `go get github.com/wesleyskap/orkai-runiq/v3/cmd/runiq` first to download and checksum all CLI-specific dependencies.
 
 #### Option B: Run on-the-fly (Without Compiling)
 To run the CLI instantly without generating an executable file in your workspace:
 ```bash
-go run github.com/wesleyskap/orkai-runiq/v2/cmd/runiq --driver sqlite --dsn runiq.db --queue default
+go run github.com/wesleyskap/orkai-runiq/v3/cmd/runiq --driver sqlite --dsn runiq.db --queue default
 ```
 
 #### Option C: Install Globally
 To build and install the binary globally (this puts the `runiq` executable inside your `$GOPATH/bin` or `$GOBIN` directory):
 ```bash
-go install github.com/wesleyskap/orkai-runiq/v2/cmd/runiq@latest
+go install github.com/wesleyskap/orkai-runiq/v3/cmd/runiq@latest
 ```
 Once installed globally, you can run it from any directory using:
 ```bash
@@ -863,7 +863,7 @@ go test ./... -v
 
 Expected output:
 ```text
-?   	github.com/wesleyskap/orkai-runiq/v2/cmd/runiq	[no test files]
+?   	github.com/wesleyskap/orkai-runiq/v3/cmd/runiq	[no test files]
 === RUN   TestMatchCron
 --- PASS: TestMatchCron (0.00s)
 === RUN   TestWorkerPoolCronScheduler_LockAcquired
@@ -893,7 +893,7 @@ Expected output:
 === RUN   TestWorkerPoolStrictPriorityFallback
 --- PASS: TestWorkerPoolStrictPriorityFallback (0.00s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/v2/queue	0.591s
+ok  	github.com/wesleyskap/orkai-runiq/v3/queue	0.591s
 === RUN   TestClientBatchCreation
 --- PASS: TestClientBatchCreation (0.00s)
 === RUN   TestPostgresBatchFlow
@@ -1073,7 +1073,7 @@ ok  	github.com/wesleyskap/orkai-runiq/v2/queue	0.591s
 === RUN   TestWorkflowCascadeCancellation
 --- PASS: TestWorkflowCascadeCancellation (0.00s)
 PASS
-ok  	github.com/wesleyskap/orkai-runiq/v2/test	3.869s
-?   	github.com/wesleyskap/orkai-runiq/v2/test/queuetest	[no test files]
+ok  	github.com/wesleyskap/orkai-runiq/v3/test	3.869s
+?   	github.com/wesleyskap/orkai-runiq/v3/test/queuetest	[no test files]
 ```
 

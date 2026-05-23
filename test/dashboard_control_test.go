@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wesleyskap/orkai-runiq/v2/queue"
+	"github.com/wesleyskap/orkai-runiq/v3/queue"
 )
 
 // TestDashboardRetryModified asserts that the server processes retry modified requests correctly.

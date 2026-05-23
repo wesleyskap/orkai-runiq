@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wesleyskap/orkai-runiq/v2/queue"
+	"github.com/wesleyskap/orkai-runiq/v3/queue"
 )
 
 // TestDashboardStatsEndpoint validates the JSON stats output from /api/stats.

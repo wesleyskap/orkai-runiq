@@ -9,7 +9,7 @@ import (
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
-	"github.com/wesleyskap/orkai-runiq/v2/queue"
+	"github.com/wesleyskap/orkai-runiq/v3/queue"
 )
 
 func TestSqliteStorageFlow(t *testing.T) {
