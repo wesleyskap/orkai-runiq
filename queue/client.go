@@ -7,9 +7,10 @@ import (
 
 // Client enqueues background jobs.
 type Client struct {
-	storage ClientStorage
-	tracer  Tracer
-	cb      *circuitBreaker
+	storage       ClientStorage
+	tracer        Tracer
+	cb            *circuitBreaker
+	encryptionKey []byte
 }
 
 // NewClient creates a new Client instance.
@@ -52,6 +53,25 @@ func WithNamespace(ns string) ClientOption {
 	}
 }
 
+// WithClientPayloadEncryption configures a custom key for encrypting job arguments.
+func WithClientPayloadEncryption(key []byte) ClientOption {
+	return func(c *Client) {
+		c.encryptionKey = key
+	}
+}
+
+func (c *Client) encryptEnvelope(env *JobEnvelope) error {
+	if len(c.encryptionKey) == 0 || len(env.Args) == 0 {
+		return nil
+	}
+	enc, err := EncryptPayload(env.Args, c.encryptionKey)
+	if err != nil {
+		return err
+	}
+	env.Args = enc
+	return nil
+}
+
 func (c *Client) execute(fn func() error) error {
 	if c.cb == nil {
 		return fn()
@@ -79,6 +99,9 @@ func (c *Client) Enqueue(ctx context.Context, queueName, name string, args []byt
 			SpanID:  spanID,
 		},
 	}
+	if err := c.encryptEnvelope(env); err != nil {
+		return err
+	}
 	return c.execute(func() error {
 		return c.storage.Enqueue(ctx, env)
 	})
@@ -105,6 +128,9 @@ func (c *Client) EnqueueAt(ctx context.Context, queueName, name string, args []b
 			SpanID:  spanID,
 		},
 	}
+	if err := c.encryptEnvelope(env); err != nil {
+		return err
+	}
 	return c.execute(func() error {
 		return c.storage.Enqueue(ctx, env)
 	})
@@ -125,6 +151,9 @@ func (c *Client) EnqueueUnique(ctx context.Context, queueName, name string, args
 			TraceID: traceID,
 			SpanID:  spanID,
 		},
+	}
+	if err := c.encryptEnvelope(env); err != nil {
+		return err
 	}
 	return c.execute(func() error {
 		return c.storage.Enqueue(ctx, env)
@@ -162,6 +191,9 @@ func (c *Client) EnqueueWorkflow(ctx context.Context, jobs ...*JobEnvelope) erro
 		if job.TraceContext.TraceID == "" {
 			job.TraceContext.TraceID = traceID
 			job.TraceContext.SpanID = spanID
+		}
+		if err := c.encryptEnvelope(job); err != nil {
+			return err
 		}
 	}
 	return c.execute(func() error {

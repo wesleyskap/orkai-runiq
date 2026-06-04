@@ -545,6 +545,27 @@ You can pause and resume queues directly through:
 1. **Dashboard UI**: Interactive **Pause** and **Resume** buttons are available under the queues stats table on the real-time SPA dashboard. A red **Paused** status badge appears next to paused queues.
 2. **Administration API**: Use HTTP POST requests to control queue states programmatically.
 
+## Payload Encryption (Encryption at Rest)
+
+Runiq provides transparent client-side and worker-side payload encryption at rest using AES-256-GCM. This ensures sensitive job arguments (`args`) containing PII, financial info, or keys are never stored in plain text within database tables or Redis keys.
+
+To configure encryption, supply a 32-byte secret key to the Client and WorkerPool options:
+
+```go
+key := []byte("12345678901234567890123456789012") // 32-byte key
+
+// Client - Automatically encrypts payloads on enqueue
+client := queue.NewClient(storage, queue.WithClientPayloadEncryption(key))
+
+// WorkerPool - Automatically decrypts payloads on dequeue
+pool := queue.NewWorkerPool(storage, 5, queue.WithWorkerPayloadEncryption(key))
+```
+
+### Safety and Invariants
+- **Metadata Tagging**: Encrypted payloads are stored with a special header (`runiq:enc:`). Workers automatically detect this prefix and handle decryption transparently before job execution.
+- **Fail-Safe**: If a worker receives an encrypted job but does not have an decryption key configured (or the key is invalid), the job fails immediately and transitions back to `pending`/`dead` with a descriptive error message.
+- **Compatibility**: Legacy or unencrypted jobs enqueued without encryption will run normally without interference.
+
 ## Administration API & Dashboard Actions
 
 Runiq's dashboard contains interactive buttons to manage tasks directly. The server exposes the following endpoints:

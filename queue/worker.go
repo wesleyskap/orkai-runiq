@@ -66,6 +66,7 @@ type WorkerPool struct {
 	archivalAge        time.Duration
 	archivalInterval   time.Duration
 	isLeader           int32
+	encryptionKey      []byte
 }
 
 func getWorkerProcessID() string {
@@ -146,6 +147,13 @@ func WithJobArchival(age, interval time.Duration) WorkerOption {
 	return func(w *WorkerPool) {
 		w.archivalAge = age
 		w.archivalInterval = interval
+	}
+}
+
+// WithWorkerPayloadEncryption configures a custom key for decrypting job arguments.
+func WithWorkerPayloadEncryption(key []byte) WorkerOption {
+	return func(w *WorkerPool) {
+		w.encryptionKey = key
 	}
 }
 
@@ -456,6 +464,18 @@ func (w *WorkerPool) executeJob(ctx context.Context, env *JobEnvelope) {
 	if !ok {
 		_ = w.storage.Fail(ctx, env.JobID, fmt.Errorf("job type not registered: name=%q", env.Name))
 		return
+	}
+	if IsEncrypted(env.Args) {
+		if len(w.encryptionKey) == 0 {
+			_ = w.storage.Fail(ctx, env.JobID, fmt.Errorf("payload is encrypted but worker has no key configured"))
+			return
+		}
+		dec, err := DecryptPayload(env.Args, w.encryptionKey)
+		if err != nil {
+			_ = w.storage.Fail(ctx, env.JobID, fmt.Errorf("failed to decrypt payload: %w", err))
+			return
+		}
+		env.Args = dec
 	}
 	w.runJobPerform(ctx, env, job)
 }
