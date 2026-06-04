@@ -119,7 +119,7 @@ func (s *SqliteStorage) beginAndPerformFail(ctx context.Context, jobID, errMsg s
 
 func (s *SqliteStorage) performFail(ctx context.Context, tx *sql.Tx, jobID, errMsg string, attempts, maxAttempts int, uniqueKey, queueName, batchID string) error {
 	if attempts+1 < maxAttempts {
-		nextRun := time.Now().Add(computeBackoffDelay(attempts))
+		nextRun := time.Now().Add(ComputeBackoffDelay(attempts))
 		query := `
 			UPDATE runiq_jobs
 			SET status = 'pending', attempts = attempts + 1, run_at = ?, error_message = ?, locked_at = NULL, updated_at = CURRENT_TIMESTAMP

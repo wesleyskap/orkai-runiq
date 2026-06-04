@@ -16,7 +16,7 @@ import (
 
 const (
 	postgresConnStr = "postgres://admin:adminpassword@localhost:5433/condolivre_db?sslmode=disable"
-	redisAddress     = "localhost:6379"
+	redisAddress    = "localhost:6379"
 )
 
 // TestPostgresStorageFlow runs a sequence of tests asserting correct PostgreSQL storage driver behavior.
@@ -849,6 +849,3 @@ func assertRedisThrottling(t *testing.T, ctx context.Context, s *queue.RedisStor
 		t.Errorf("expected job to be in scheduled ZSet, got score=%v, err=%v", score, err)
 	}
 }
-
-
-

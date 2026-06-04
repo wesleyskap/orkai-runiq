@@ -15,9 +15,9 @@ func generateJobID() string {
 	return hex.EncodeToString(b)
 }
 
-// computeBackoffDelay returns the delay before the next retry attempt
+// ComputeBackoffDelay returns the delay before the next retry attempt
 // using exponential backoff: 10s, 20s, 40s... capped at 1h, with sub-second jitter.
-func computeBackoffDelay(attempts int) time.Duration {
+func ComputeBackoffDelay(attempts int) time.Duration {
 	delaySec := (1 << uint(attempts)) * 10
 	if delaySec > 3600 {
 		delaySec = 3600
@@ -58,5 +58,3 @@ type sqlExecutor interface {
 	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 }
-
-

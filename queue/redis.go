@@ -242,4 +242,3 @@ func (r *RedisStorage) archiveSingleJob(ctx context.Context, member string) (boo
 	_, err = pipe.Exec(ctx)
 	return err == nil && data != "", err
 }
-

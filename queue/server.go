@@ -478,4 +478,3 @@ func (s *Server) handleDeleteCron(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 }
-

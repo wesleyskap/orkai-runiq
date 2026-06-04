@@ -39,7 +39,7 @@ func TestWorkerPoolWeightedRotation(t *testing.T) {
 	pool.firstQueues = []string{"critical", "critical", "critical", "default"}
 
 	ctx := context.Background()
-	
+
 	// Let's call fetchNext 4 times
 	for i := 0; i < 4; i++ {
 		_, _ = pool.fetchNext(ctx, []string{"critical", "default"})

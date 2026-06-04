@@ -104,4 +104,3 @@ func (r *RedisStorage) parseActiveProcesses(raws []interface{}, leaderID string)
 	}
 	return list
 }
-

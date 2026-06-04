@@ -1,9 +1,11 @@
-package queue
+package test
 
 import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/wesleyskap/orkai-runiq/v3/queue"
 )
 
 func TestMatchCron(t *testing.T) {
@@ -27,7 +29,7 @@ func TestMatchCron(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := MatchCron(tc.spec, tc.time)
+		got := queue.MatchCron(tc.spec, tc.time)
 		if got != tc.match {
 			t.Errorf("MatchCron(%q, %v) = %v; want %v", tc.spec, tc.time, got, tc.match)
 		}
@@ -35,8 +37,8 @@ func TestMatchCron(t *testing.T) {
 }
 
 type mockCronStorage struct {
-	WorkerPoolStorage
-	enqueued []*JobEnvelope
+	queue.WorkerPoolStorage
+	enqueued []*queue.JobEnvelope
 	lockRes  bool
 	lockErr  error
 }
@@ -45,26 +47,26 @@ func (m *mockCronStorage) LockCronExecution(ctx context.Context, name string, t 
 	return m.lockRes, m.lockErr
 }
 
-func (m *mockCronStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
+func (m *mockCronStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error {
 	m.enqueued = append(m.enqueued, env)
 	return nil
 }
 
-func (m *mockCronStorage) GetCronSchedules(ctx context.Context) ([]CronJob, error) {
+func (m *mockCronStorage) GetCronSchedules(ctx context.Context) ([]queue.CronJob, error) {
 	return nil, nil
 }
 
 func TestWorkerPoolCronScheduler_LockAcquired(t *testing.T) {
 	mock := &mockCronStorage{lockRes: true}
-	pool := NewWorkerPool(mock, 1)
-	cron := CronJob{
+	pool := queue.NewWorkerPool(mock, 1)
+	cron := queue.CronJob{
 		Payload: []byte("pay"),
 		Spec:    "* * * * *",
 		Name:    "job-a",
 		Queue:   "q-a",
 	}
 
-	pool.enqueueCronJob(context.Background(), cron, time.Now())
+	pool.EnqueueCronJob(context.Background(), cron, time.Now())
 
 	if len(mock.enqueued) != 1 {
 		t.Fatalf("expected 1 enqueued job, got %d", len(mock.enqueued))
@@ -77,15 +79,15 @@ func TestWorkerPoolCronScheduler_LockAcquired(t *testing.T) {
 
 func TestWorkerPoolCronScheduler_LockDenied(t *testing.T) {
 	mock := &mockCronStorage{lockRes: false}
-	pool := NewWorkerPool(mock, 1)
-	cron := CronJob{
+	pool := queue.NewWorkerPool(mock, 1)
+	cron := queue.CronJob{
 		Payload: []byte("pay"),
 		Spec:    "* * * * *",
 		Name:    "job-b",
 		Queue:   "q-b",
 	}
 
-	pool.enqueueCronJob(context.Background(), cron, time.Now())
+	pool.EnqueueCronJob(context.Background(), cron, time.Now())
 
 	if len(mock.enqueued) != 0 {
 		t.Fatalf("expected 0 enqueued jobs due to lock denial, got %d", len(mock.enqueued))
@@ -94,11 +96,11 @@ func TestWorkerPoolCronScheduler_LockDenied(t *testing.T) {
 
 func TestWorkerPoolCronScheduler_ProcessMatching(t *testing.T) {
 	mock := &mockCronStorage{lockRes: true}
-	pool := NewWorkerPool(mock, 1)
+	pool := queue.NewWorkerPool(mock, 1)
 	pool.RegisterCron("0 0 * * *", "default", "daily-job", []byte{})
 
 	ctx := context.Background()
-	pool.processCronJobs(ctx, time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC))
+	pool.ProcessCronJobs(ctx, time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC))
 
 	for i := 0; i < 10; i++ {
 		if len(mock.enqueued) > 0 {

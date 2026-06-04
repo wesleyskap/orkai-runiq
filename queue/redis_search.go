@@ -174,4 +174,3 @@ func (r *RedisStorage) BulkPurge(ctx context.Context, jobIDs []string) error {
 	}
 	return nil
 }
-

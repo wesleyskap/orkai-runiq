@@ -207,6 +207,3 @@ func (c *Client) EnqueueWorkflow(ctx context.Context, jobs ...*JobEnvelope) erro
 func (c *Client) EnqueueWithDelay(ctx context.Context, queueName, name string, args []byte, delay time.Duration) error {
 	return c.EnqueueIn(ctx, queueName, name, args, delay)
 }
-
-
-

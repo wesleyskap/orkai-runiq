@@ -234,4 +234,3 @@ func (r *RedisStorage) sliceToInterfaces(slice []string) []interface{} {
 	}
 	return result
 }
-

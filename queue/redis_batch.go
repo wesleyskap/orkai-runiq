@@ -152,4 +152,3 @@ func (r *RedisStorage) failExpiredBatch(ctx context.Context, key, id string) (bo
 	_, err := pipe.Exec(ctx)
 	return true, err
 }
-

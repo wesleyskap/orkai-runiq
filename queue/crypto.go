@@ -11,13 +11,13 @@ import (
 var (
 	// EncryptionHeader is prefixed to encrypted payloads to distinguish them.
 	EncryptionHeader = []byte("runiq:enc:")
-	
+
 	// ErrInvalidKey is returned when the key size is not 16, 24, or 32 bytes.
 	ErrInvalidKey = errors.New("crypto: invalid key size, must be 16, 24, or 32 bytes")
-	
+
 	// ErrPayloadTooShort is returned when an encrypted payload is too short.
 	ErrPayloadTooShort = errors.New("crypto: payload is too short")
-	
+
 	// ErrNoHeader is returned when trying to decrypt a payload without the encryption header.
 	ErrNoHeader = errors.New("crypto: missing encryption header")
 )

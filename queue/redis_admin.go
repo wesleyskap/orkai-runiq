@@ -117,7 +117,7 @@ func (r *RedisStorage) prepareFailStep(ctx context.Context, pipe redis.Pipeliner
 		maxAttempts = 3
 	}
 	if env.Attempts < maxAttempts {
-		nextRun := time.Now().Add(computeBackoffDelay(env.Attempts - 1))
+		nextRun := time.Now().Add(ComputeBackoffDelay(env.Attempts - 1))
 		env.RunAt = &nextRun
 		r.rescheduleJob(ctx, pipe, env)
 		return false
@@ -240,6 +240,3 @@ func (r *RedisStorage) collectQueueIDs(ctx context.Context, queue string) ([]str
 	allJobIDs = append(allJobIDs, dIDs...)
 	return allJobIDs, dIDs
 }
-
-
-

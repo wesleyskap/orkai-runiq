@@ -111,4 +111,3 @@ func WithCronLocation(loc *time.Location) CronOption {
 		o.location = loc
 	}
 }
-

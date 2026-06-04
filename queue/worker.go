@@ -216,7 +216,6 @@ func (w *WorkerPool) Start(ctx context.Context, queues ...string) error {
 	return ctx.Err()
 }
 
-
 func (w *WorkerPool) setupWeightedQueues(queues []string) {
 	if len(w.weights) == 0 {
 		return
@@ -540,7 +539,7 @@ func createCronEnvelope(cron CronJob, now time.Time) *JobEnvelope {
 	}
 }
 
-func (w *WorkerPool) enqueueCronJob(ctx context.Context, cron CronJob, now time.Time) {
+func (w *WorkerPool) EnqueueCronJob(ctx context.Context, cron CronJob, now time.Time) {
 	ok, err := w.storage.LockCronExecution(ctx, cron.Name, now)
 	if err != nil || !ok {
 		if err != nil {
@@ -569,14 +568,14 @@ func (w *WorkerPool) startCronScheduler(ctx context.Context) {
 				now := time.Now().UTC()
 				if now.Minute() != lastMinute {
 					lastMinute = now.Minute()
-					w.processCronJobs(ctx, now)
+					w.ProcessCronJobs(ctx, now)
 				}
 			}
 		}
 	}
 }
 
-func (w *WorkerPool) processCronJobs(ctx context.Context, now time.Time) {
+func (w *WorkerPool) ProcessCronJobs(ctx context.Context, now time.Time) {
 	m := w.mergeCronJobs(ctx)
 	for _, cron := range m {
 		if cron.Paused {
@@ -587,7 +586,7 @@ func (w *WorkerPool) processCronJobs(ctx context.Context, now time.Time) {
 			locNow = now.In(cron.Location)
 		}
 		if MatchCron(cron.Spec, locNow) {
-			go w.enqueueCronJob(ctx, cron, now)
+			go w.EnqueueCronJob(ctx, cron, now)
 		}
 	}
 }
@@ -738,4 +737,3 @@ func (w *WorkerPool) runArchival(ctx context.Context) {
 		w.logger.Info(ctx, "job archiver completed", "count", count)
 	}
 }
-

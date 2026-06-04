@@ -9,10 +9,10 @@ import (
 
 // FakeClientStorage implements queue.ClientStorage.
 type FakeClientStorage struct {
-	EnqueueFunc        func(ctx context.Context, env *queue.JobEnvelope) error
-	DequeueFunc        func(ctx context.Context, queueName string) (*queue.JobEnvelope, error)
-	AckFunc            func(ctx context.Context, jobID string) error
-	FailFunc           func(ctx context.Context, jobID string, err error) error
+	EnqueueFunc         func(ctx context.Context, env *queue.JobEnvelope) error
+	DequeueFunc         func(ctx context.Context, queueName string) (*queue.JobEnvelope, error)
+	AckFunc             func(ctx context.Context, jobID string) error
+	FailFunc            func(ctx context.Context, jobID string, err error) error
 	CreateBatchFunc     func(ctx context.Context, batchID string, callback *queue.JobEnvelope, expiresAt *time.Time) error
 	EnqueueInBatchFunc  func(ctx context.Context, batchID string, env *queue.JobEnvelope) error
 	SubmitBatchFunc     func(ctx context.Context, batchID string) error

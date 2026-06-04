@@ -313,13 +313,17 @@ type Tracer interface {
 type defaultLogger struct{}
 
 func (d *defaultLogger) Info(ctx context.Context, msg string, keysAndValues ...interface{}) {}
-func (d *defaultLogger) Error(ctx context.Context, msg string, err error, keysAndValues ...interface{}) {}
+func (d *defaultLogger) Error(ctx context.Context, msg string, err error, keysAndValues ...interface{}) {
+}
 
 type defaultTracer struct{}
 
 func (d *defaultTracer) ExtractTrace(ctx context.Context) (string, string) { return "", "" }
-func (d *defaultTracer) InjectTrace(ctx context.Context, traceID, spanID string) context.Context { return ctx }
-func (d *defaultTracer) RecordLatency(ctx context.Context, name string, duration time.Duration, tags map[string]string) {}
+func (d *defaultTracer) InjectTrace(ctx context.Context, traceID, spanID string) context.Context {
+	return ctx
+}
+func (d *defaultTracer) RecordLatency(ctx context.Context, name string, duration time.Duration, tags map[string]string) {
+}
 func (d *defaultTracer) IncrementCounter(ctx context.Context, name string, tags map[string]string) {}
 
 // Namespacer defines the interface for storage backends that support namespaces.
@@ -358,4 +362,3 @@ func OpenStorage(name string, conn interface{}) (interface{}, error) {
 	}
 	return factory(conn)
 }
-

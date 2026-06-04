@@ -231,4 +231,3 @@ func assertPurgeAllEndpoint(t *testing.T, h http.Handler) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 }
-

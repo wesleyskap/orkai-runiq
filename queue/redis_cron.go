@@ -55,4 +55,3 @@ func (r *RedisStorage) DeleteCronSchedule(ctx context.Context, name string) erro
 	err := r.client.HDel(ctx, r.k("runiq:cron_schedules"), name).Err()
 	return err
 }
-
