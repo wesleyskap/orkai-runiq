@@ -2,10 +2,15 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [3.2.0] - 2026-06-05
+
+### Added
+- **Interval-Based Recurring Tasks**: Support for registering recurring background tasks using simple duration intervals (`RegisterInterval`) without cron expressions. Safe for replica clusters using distributed locks.
+
 ## [3.1.0] - 2026-06-04
 
 ### Added
-- **Criptografia Nativa de Payloads (Encryption at Rest)**: AES-256-GCM symmetric client-side payload encryption (`WithClientPayloadEncryption`) and transparent worker-side decryption (`WithWorkerPayloadEncryption`) supporting SQLite, PostgreSQL, and Redis backends without any schema changes.
+- **Payload Encryption at Rest**: AES-256-GCM symmetric client-side payload encryption (`WithClientPayloadEncryption`) and transparent worker-side decryption (`WithWorkerPayloadEncryption`) supporting SQLite, PostgreSQL, and Redis backends without any schema changes.
 
 ## [3.0.0] - 2026-05-22
 

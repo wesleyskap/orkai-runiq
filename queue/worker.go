@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// IntervalJob represents a background task that repeats after a simple duration.
+type IntervalJob struct {
+	Payload  []byte
+	Interval time.Duration
+	Name     string
+	Queue    string
+}
+
 type handlerConfig struct {
 	maxConcurrency int
 	rateLimit      int
@@ -67,6 +75,9 @@ type WorkerPool struct {
 	archivalInterval   time.Duration
 	isLeader           int32
 	encryptionKey      []byte
+	intervalJobs       []IntervalJob
+	lastIntervalTicks  map[string]int64
+	intervalMutex      sync.Mutex
 }
 
 func getWorkerProcessID() string {
@@ -80,16 +91,17 @@ func getWorkerProcessID() string {
 // NewWorkerPool instantiates a new WorkerPool.
 func NewWorkerPool(storage WorkerPoolStorage, concurrency int, opts ...WorkerOption) *WorkerPool {
 	w := &WorkerPool{
-		storage:         storage,
-		logger:          &defaultLogger{},
-		tracer:          &defaultTracer{},
-		processID:       getWorkerProcessID(),
-		registry:        make(map[string]Job),
-		configs:         make(map[string]handlerConfig),
-		weights:         make(map[string]int),
-		concurrency:     concurrency,
-		shutdownTimeout: 10 * time.Second,
-		eventHandlers:   make(map[EventType][]EventHandler),
+		storage:           storage,
+		logger:            &defaultLogger{},
+		tracer:            &defaultTracer{},
+		processID:         getWorkerProcessID(),
+		registry:          make(map[string]Job),
+		configs:           make(map[string]handlerConfig),
+		weights:           make(map[string]int),
+		concurrency:       concurrency,
+		shutdownTimeout:   10 * time.Second,
+		eventHandlers:     make(map[EventType][]EventHandler),
+		lastIntervalTicks: make(map[string]int64),
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -185,6 +197,16 @@ func (w *WorkerPool) RegisterCron(spec, queue, name string, payload []byte, opts
 	})
 }
 
+// RegisterInterval registers a recurring task under the specified duration interval.
+func (w *WorkerPool) RegisterInterval(interval time.Duration, queueName, name string, payload []byte) {
+	w.intervalJobs = append(w.intervalJobs, IntervalJob{
+		Payload:  payload,
+		Interval: interval,
+		Name:     name,
+		Queue:    queueName,
+	})
+}
+
 // Use registers job execution middlewares.
 func (w *WorkerPool) Use(mws ...func(JobHandler) JobHandler) {
 	w.middlewares = append(w.middlewares, mws...)
@@ -267,6 +289,9 @@ func (w *WorkerPool) startBackgroundLoops(ctx context.Context, queues []string) 
 	go w.startBatchTimeoutWatcher(ctx)
 	if w.archivalAge > 0 && w.archivalInterval > 0 {
 		go w.startJobArchiver(ctx)
+	}
+	if len(w.intervalJobs) > 0 {
+		go w.startIntervalScheduler(ctx)
 	}
 	if w.autoscale != nil {
 		go w.startAutoscaler(ctx)
@@ -735,5 +760,58 @@ func (w *WorkerPool) runArchival(ctx context.Context) {
 		w.logger.Error(ctx, "job archiver failed", err)
 	} else if count > 0 {
 		w.logger.Info(ctx, "job archiver completed", "count", count)
+	}
+}
+
+func (w *WorkerPool) startIntervalScheduler(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if w.checkLeader() {
+				w.ProcessIntervalJobs(ctx, time.Now().UTC())
+			}
+		}
+	}
+}
+
+// ProcessIntervalJobs processes all registered interval jobs.
+func (w *WorkerPool) ProcessIntervalJobs(ctx context.Context, now time.Time) {
+	for _, job := range w.intervalJobs {
+		intervalSec := int64(job.Interval.Seconds())
+		if intervalSec <= 0 {
+			continue
+		}
+		blockIdx := now.Unix() / intervalSec
+		w.intervalMutex.Lock()
+		lastIdx := w.lastIntervalTicks[job.Name]
+		if blockIdx > lastIdx {
+			w.lastIntervalTicks[job.Name] = blockIdx
+			w.intervalMutex.Unlock()
+			go w.EnqueueIntervalJob(ctx, job, time.Unix(blockIdx*intervalSec, 0).UTC())
+		} else {
+			w.intervalMutex.Unlock()
+		}
+	}
+}
+
+// EnqueueIntervalJob enqueues a single interval job.
+func (w *WorkerPool) EnqueueIntervalJob(ctx context.Context, job IntervalJob, blockTime time.Time) {
+	ok, err := w.storage.LockCronExecution(ctx, job.Name, blockTime)
+	if err != nil || !ok {
+		return
+	}
+	env := &JobEnvelope{
+		JobID:       fmt.Sprintf("interval-%s-%d", job.Name, blockTime.Unix()),
+		Queue:       job.Queue,
+		Name:        job.Name,
+		Args:        job.Payload,
+		MaxAttempts: 3,
+	}
+	if err := w.storage.Enqueue(ctx, env); err == nil {
+		w.triggerEvent(EventJobEnqueued, env, nil)
 	}
 }

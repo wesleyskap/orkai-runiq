@@ -240,6 +240,17 @@ The background scheduler runs automatically inside the `WorkerPool`. At the star
 
 All active registered cron schedules (including target queues and arguments) are saved in the storage backend and displayed in the **Cron Jobs** tab on the dashboard, making scheduled workloads fully visible. You can create, edit, pause, and delete dynamic crons directly from this tab.
 
+## Interval-Based Recurring Tasks
+
+In addition to standard cron expressions, Runiq supports registering recurring tasks with simple duration intervals (e.g. every 10 minutes) without having to write cron expressions. To prevent duplicate executions across replica workers in a cluster, Runiq uses the distributed cron lock mechanism under the hood by partitioning intervals into distinct, consistent time blocks.
+
+To register a static interval job on the `WorkerPool`:
+
+```go
+// Register a recurring task to execute every 10 minutes
+pool.RegisterInterval(10*time.Minute, "default", "CleanupSync", []byte(`{}`))
+```
+
 ## Active Worker Pool Monitoring
 
 When a `WorkerPool` starts, it automatically registers itself with the storage driver using a unique process identifier (comprising the hostname, PID, and a random token). The worker pool then maintains a periodic background heartbeat ticker (every 5 seconds) to signal its health.

@@ -369,6 +369,7 @@ func (p *PostgresStorage) loadDynamicCrons(ctx context.Context, m map[string]Cro
 
 // FailExpiredBatches transitions expired batches to failed status.
 // Usage example:
+//
 //	err := storage.FailExpiredBatches(ctx)
 func (p *PostgresStorage) FailExpiredBatches(ctx context.Context) error {
 	query := `
@@ -383,6 +384,7 @@ func (p *PostgresStorage) FailExpiredBatches(ctx context.Context) error {
 
 // RegisterCronJobs saves the cron job settings to the database.
 // Usage example:
+//
 //	err := storage.RegisterCronJobs(ctx, crons)
 func (p *PostgresStorage) RegisterCronJobs(ctx context.Context, crons []CronJob) error {
 	tx, err := p.db.BeginTx(ctx, nil)

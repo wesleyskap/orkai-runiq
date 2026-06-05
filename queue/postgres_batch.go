@@ -8,6 +8,7 @@ import (
 
 // CreateBatch registers a new batch record with open status and callback details.
 // Usage example:
+//
 //	err := storage.CreateBatch(ctx, "batch-123", callback, expiresAt)
 func (p *PostgresStorage) CreateBatch(ctx context.Context, batchID string, callback *JobEnvelope, expiresAt *time.Time) error {
 	query := `
@@ -19,6 +20,7 @@ func (p *PostgresStorage) CreateBatch(ctx context.Context, batchID string, callb
 
 // EnqueueInBatch associates a job envelope with a batch and enqueues it, incrementing batch job counts.
 // Usage example:
+//
 //	err := storage.EnqueueInBatch(ctx, "batch-123", env)
 func (p *PostgresStorage) EnqueueInBatch(ctx context.Context, batchID string, env *JobEnvelope) error {
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -67,6 +69,7 @@ func (p *PostgresStorage) insertBatchJob(ctx context.Context, tx *sql.Tx, batchI
 
 // SubmitBatch seals the batch enqueuing phase and triggers callback if all jobs have already completed.
 // Usage example:
+//
 //	err := storage.SubmitBatch(ctx, "batch-123")
 func (p *PostgresStorage) SubmitBatch(ctx context.Context, batchID string) error {
 	tx, err := p.db.BeginTx(ctx, nil)

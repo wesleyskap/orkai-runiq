@@ -15,6 +15,7 @@ type Client struct {
 
 // NewClient creates a new Client instance.
 // Usage example:
+//
 //	client := queue.NewClient(storage, queue.WithClientTracer(tracer))
 func NewClient(storage ClientStorage, opts ...ClientOption) *Client {
 	c := &Client{
@@ -162,6 +163,7 @@ func (c *Client) EnqueueUnique(ctx context.Context, queueName, name string, args
 
 // NewJob instantiates a JobEnvelope with a pre-generated ID.
 // Usage example:
+//
 //	job := queue.NewJob("default", "UploadData", payload)
 func NewJob(queueName, name string, args []byte) *JobEnvelope {
 	return &JobEnvelope{
@@ -175,6 +177,7 @@ func NewJob(queueName, name string, args []byte) *JobEnvelope {
 
 // DependsOn adds parentJobID dependencies to the job.
 // Usage example:
+//
 //	child.DependsOn(parent)
 func (env *JobEnvelope) DependsOn(parent *JobEnvelope) {
 	if parent != nil && parent.JobID != "" {
@@ -184,6 +187,7 @@ func (env *JobEnvelope) DependsOn(parent *JobEnvelope) {
 
 // EnqueueWorkflow enqueues multiple dependent jobs transactionally.
 // Usage example:
+//
 //	err := client.EnqueueWorkflow(ctx, jobA, jobB)
 func (c *Client) EnqueueWorkflow(ctx context.Context, jobs ...*JobEnvelope) error {
 	for _, job := range jobs {
@@ -203,6 +207,7 @@ func (c *Client) EnqueueWorkflow(ctx context.Context, jobs ...*JobEnvelope) erro
 
 // EnqueueWithDelay schedules a job to be executed after a relative duration delay.
 // Usage example:
+//
 //	err := client.EnqueueWithDelay(ctx, "default", "SendReminder", payload, 30*time.Minute)
 func (c *Client) EnqueueWithDelay(ctx context.Context, queueName, name string, args []byte, delay time.Duration) error {
 	return c.EnqueueIn(ctx, queueName, name, args, delay)
