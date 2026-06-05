@@ -18,6 +18,7 @@ type OTelTracer struct {
 
 // NewOTelTracer initializes a standard OpenTelemetry tracer and meter.
 // Usage example:
+//
 //	t := queue.NewOTelTracer(tp, mp)
 func NewOTelTracer(tp trace.TracerProvider, mp metric.MeterProvider) *OTelTracer {
 	if tp == nil {
@@ -90,6 +91,7 @@ func convertTagsToAttrs(tags map[string]string) []attribute.KeyValue {
 
 // RegisterQueueDepthMetrics registers an observable gauge to report pending queue depths dynamically.
 // Usage example:
+//
 //	err := t.RegisterQueueDepthMetrics(storage, []string{"default"})
 func (o *OTelTracer) RegisterQueueDepthMetrics(storage JobStats, queues []string) error {
 	gauge, err := o.meter.Int64ObservableGauge("runiq_queue_depth",

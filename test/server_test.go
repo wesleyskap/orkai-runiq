@@ -12,6 +12,7 @@ import (
 
 // TestDashboardStatsEndpoint validates the JSON stats output from /api/stats.
 // Usage example:
+//
 //	go test -v ./test/...
 func TestDashboardStatsEndpoint(t *testing.T) {
 	fakeStore := &FakeStorage{
@@ -55,6 +56,7 @@ func TestDashboardStatsEndpoint(t *testing.T) {
 
 // TestDashboardUIEndpoint validates that the root path serves the embedded index.html UI.
 // Usage example:
+//
 //	go test -v ./test/...
 func TestDashboardUIEndpoint(t *testing.T) {
 	fakeStore := &FakeStorage{}

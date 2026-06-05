@@ -113,3 +113,82 @@ func TestWorkerPoolCronScheduler_ProcessMatching(t *testing.T) {
 		t.Fatalf("expected 1 job, got %d", len(mock.enqueued))
 	}
 }
+
+func TestWorkerPoolIntervalScheduler_LockAcquired(t *testing.T) {
+	mock := &mockCronStorage{lockRes: true}
+	pool := queue.NewWorkerPool(mock, 1)
+	pool.RegisterInterval(10*time.Minute, "q-a", "job-a", []byte("pay"))
+
+	pool.ProcessIntervalJobs(context.Background(), time.Date(2026, 5, 20, 8, 30, 0, 0, time.UTC))
+
+	for i := 0; i < 10; i++ {
+		if len(mock.enqueued) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(mock.enqueued) != 1 {
+		t.Fatalf("expected 1 enqueued job, got %d", len(mock.enqueued))
+	}
+	env := mock.enqueued[0]
+	if env.Queue != "q-a" || env.Name != "job-a" {
+		t.Errorf("incorrect job queue/name: %+v", env)
+	}
+}
+
+func TestWorkerPoolIntervalScheduler_LockDenied(t *testing.T) {
+	mock := &mockCronStorage{lockRes: false}
+	pool := queue.NewWorkerPool(mock, 1)
+	pool.RegisterInterval(10*time.Minute, "q-b", "job-b", []byte("pay"))
+
+	pool.ProcessIntervalJobs(context.Background(), time.Date(2026, 5, 20, 8, 30, 0, 0, time.UTC))
+
+	for i := 0; i < 10; i++ {
+		if len(mock.enqueued) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(mock.enqueued) != 0 {
+		t.Fatalf("expected 0 enqueued jobs due to lock denial, got %d", len(mock.enqueued))
+	}
+}
+
+func TestWorkerPoolIntervalScheduler_Debouncing(t *testing.T) {
+	mock := &mockCronStorage{lockRes: true}
+	pool := queue.NewWorkerPool(mock, 1)
+	pool.RegisterInterval(10*time.Minute, "q-a", "job-a", []byte("pay"))
+
+	ctx := context.Background()
+	// First block check
+	pool.ProcessIntervalJobs(ctx, time.Date(2026, 5, 20, 8, 30, 0, 0, time.UTC))
+	// Second check in same 10-minute block (should not enqueue again)
+	pool.ProcessIntervalJobs(ctx, time.Date(2026, 5, 20, 8, 34, 0, 0, time.UTC))
+
+	for i := 0; i < 10; i++ {
+		if len(mock.enqueued) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(mock.enqueued) != 1 {
+		t.Errorf("expected only 1 job enqueued for the same block, got %d", len(mock.enqueued))
+	}
+
+	// Third check in next 10-minute block (should enqueue again)
+	pool.ProcessIntervalJobs(ctx, time.Date(2026, 5, 20, 8, 41, 0, 0, time.UTC))
+
+	for i := 0; i < 10; i++ {
+		if len(mock.enqueued) > 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(mock.enqueued) != 2 {
+		t.Errorf("expected 2 jobs enqueued across two blocks, got %d", len(mock.enqueued))
+	}
+}
