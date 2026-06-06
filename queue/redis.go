@@ -94,33 +94,78 @@ func (r *RedisStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
 	return r.execEnqueue(ctx, env, data)
 }
 
+func (r *RedisStorage) migrateListToZSet(ctx context.Context, queue string) {
+	qKey := r.k("runiq:queue:" + queue)
+	var jobIDs []string
+	for {
+		jobID, err := r.client.RPop(ctx, qKey).Result()
+		if err != nil {
+			break
+		}
+		jobIDs = append(jobIDs, jobID)
+	}
+	if len(jobIDs) == 0 {
+		return
+	}
+	var zs []redis.Z
+	for i, jobID := range jobIDs {
+		score := 0.0 - (float64(time.Now().Unix())+float64(i))/1e11
+		zs = append(zs, redis.Z{Score: score, Member: jobID})
+	}
+	r.client.ZAdd(ctx, qKey, zs...)
+}
+
 func (r *RedisStorage) execEnqueue(ctx context.Context, env *JobEnvelope, data []byte) error {
+	qKey := r.k("runiq:queue:" + env.Queue)
+	qType, _ := r.client.Type(ctx, qKey).Result()
+	if qType == "list" {
+		r.migrateListToZSet(ctx, env.Queue)
+	}
 	pipe := r.client.Pipeline()
 	pipe.HSet(ctx, r.k("runiq:jobs"), env.JobID, data)
 	pipe.SAdd(ctx, r.k("runiq:queues"), env.Queue)
 	if env.RunAt != nil && env.RunAt.After(time.Now()) {
 		pipe.ZAdd(ctx, r.k("runiq:scheduled:"+env.Queue), redis.Z{Score: float64(env.RunAt.Unix()), Member: env.JobID})
 	} else {
-		pipe.LPush(ctx, r.k("runiq:queue:"+env.Queue), env.JobID)
+		score := float64(env.Priority) - float64(time.Now().Unix())/1e11
+		pipe.ZAdd(ctx, qKey, redis.Z{Score: score, Member: env.JobID})
 	}
 	_, err := pipe.Exec(ctx)
 	return err
 }
 
-// Dequeue pops the next job ID from the queue list and retrieves its details from the Redis hash.
-func (r *RedisStorage) Dequeue(ctx context.Context, queueName string) (*JobEnvelope, error) {
-	jobID, err := r.client.RPop(ctx, r.k("runiq:queue:"+queueName)).Result()
+func (r *RedisStorage) Dequeue(ctx context.Context, queueName string, workerTags []string) (*JobEnvelope, error) {
+	qKey := r.k("runiq:queue:" + queueName)
+	qType, _ := r.client.Type(ctx, qKey).Result()
+	if qType == "list" {
+		r.migrateListToZSet(ctx, queueName)
+	}
+	zs, err := r.client.ZRevRangeWithScores(ctx, qKey, 0, 99).Result()
 	if err != nil {
 		return nil, checkRedisNil(err)
 	}
-	env, err := r.getJobEnvelope(ctx, jobID)
-	if err != nil {
-		return nil, err
+	return r.findAndPopJob(ctx, queueName, qKey, zs, workerTags)
+}
+
+func (r *RedisStorage) findAndPopJob(ctx context.Context, queue, qKey string, zs []redis.Z, workerTags []string) (*JobEnvelope, error) {
+	for _, z := range zs {
+		jobID, ok := z.Member.(string)
+		if !ok {
+			continue
+		}
+		env, err := r.getJobEnvelope(ctx, jobID)
+		if err != nil || env == nil {
+			continue
+		}
+		if matchTags(env.Tags, workerTags) {
+			removed, err := r.client.ZRem(ctx, qKey, jobID).Result()
+			if err == nil && removed > 0 {
+				_ = r.client.SAdd(ctx, r.k("runiq:active:"+queue), jobID).Err()
+				return env, nil
+			}
+		}
 	}
-	if err := r.client.SAdd(ctx, r.k("runiq:active:"+queueName), jobID).Err(); err != nil {
-		return nil, err
-	}
-	return env, nil
+	return nil, nil
 }
 
 func checkRedisNil(err error) error {
@@ -140,7 +185,6 @@ func (r *RedisStorage) getJobEnvelope(ctx context.Context, jobID string) (*JobEn
 	return &env, err
 }
 
-// PollScheduled atomically moves scheduled jobs that are due from ZSet to list.
 func (r *RedisStorage) PollScheduled(ctx context.Context, queueName string) error {
 	now := time.Now().Unix()
 	jobIDs, err := r.client.ZRangeByScore(ctx, r.k("runiq:scheduled:"+queueName), &redis.ZRangeBy{
@@ -150,12 +194,27 @@ func (r *RedisStorage) PollScheduled(ctx context.Context, queueName string) erro
 	if err != nil || len(jobIDs) == 0 {
 		return err
 	}
+	return r.activateScheduledJobs(ctx, queueName, jobIDs)
+}
+
+func (r *RedisStorage) activateScheduledJobs(ctx context.Context, queue string, jobIDs []string) error {
+	qKey := r.k("runiq:queue:" + queue)
+	qType, _ := r.client.Type(ctx, qKey).Result()
+	if qType == "list" {
+		r.migrateListToZSet(ctx, queue)
+	}
 	pipe := r.client.Pipeline()
 	for _, id := range jobIDs {
-		pipe.ZRem(ctx, r.k("runiq:scheduled:"+queueName), id)
-		pipe.LPush(ctx, r.k("runiq:queue:"+queueName), id)
+		pipe.ZRem(ctx, r.k("runiq:scheduled:"+queue), id)
+		env, err := r.getJobEnvelope(ctx, id)
+		priority := 0
+		if err == nil && env != nil {
+			priority = env.Priority
+		}
+		score := float64(priority) - float64(time.Now().Unix())/1e11
+		pipe.ZAdd(ctx, qKey, redis.Z{Score: score, Member: id})
 	}
-	_, err = pipe.Exec(ctx)
+	_, err := pipe.Exec(ctx)
 	return err
 }
 

@@ -43,11 +43,11 @@ func TestWorkflowSequentialExecution(t *testing.T) {
 }
 
 func assertSequentialLifecycle(t *testing.T, ctx context.Context, s *queue.SqliteStorage, jobA, jobB, jobC *queue.JobEnvelope) {
-	deq, _ := s.Dequeue(ctx, "default")
+	deq, _ := s.Dequeue(ctx, "default", nil)
 	if deq == nil || deq.JobID != jobA.JobID {
 		t.Fatalf("expected to dequeue jobA, got %v", deq)
 	}
-	if deq2, _ := s.Dequeue(ctx, "default"); deq2 != nil {
+	if deq2, _ := s.Dequeue(ctx, "default", nil); deq2 != nil {
 		t.Fatalf("expected no other jobs available, got %v", deq2)
 	}
 	if err := s.Ack(ctx, jobA.JobID); err != nil {
@@ -57,14 +57,14 @@ func assertSequentialLifecycle(t *testing.T, ctx context.Context, s *queue.Sqlit
 }
 
 func assertSecondStep(t *testing.T, ctx context.Context, s *queue.SqliteStorage, jobB, jobC *queue.JobEnvelope) {
-	deq, _ := s.Dequeue(ctx, "default")
+	deq, _ := s.Dequeue(ctx, "default", nil)
 	if deq == nil || deq.JobID != jobB.JobID {
 		t.Fatalf("expected to dequeue jobB, got %v", deq)
 	}
 	if err := s.Ack(ctx, jobB.JobID); err != nil {
 		t.Fatalf("failed to ack jobB: %v", err)
 	}
-	deq, _ = s.Dequeue(ctx, "default")
+	deq, _ = s.Dequeue(ctx, "default", nil)
 	if deq == nil || deq.JobID != jobC.JobID {
 		t.Fatalf("expected to dequeue jobC, got %v", deq)
 	}
@@ -90,18 +90,18 @@ func TestWorkflowComplexDAG(t *testing.T) {
 }
 
 func assertComplexDAGLifecycle(t *testing.T, ctx context.Context, s *queue.SqliteStorage, jobA, jobB, jobC *queue.JobEnvelope) {
-	deq1, _ := s.Dequeue(ctx, "default")
-	deq2, _ := s.Dequeue(ctx, "default")
+	deq1, _ := s.Dequeue(ctx, "default", nil)
+	deq2, _ := s.Dequeue(ctx, "default", nil)
 	if deq1 == nil || deq2 == nil {
 		t.Fatalf("expected to dequeue both A and B, got %v and %v", deq1, deq2)
 	}
-	if deq3, _ := s.Dequeue(ctx, "default"); deq3 != nil {
+	if deq3, _ := s.Dequeue(ctx, "default", nil); deq3 != nil {
 		t.Fatalf("expected jobC to be blocked, got %v", deq3)
 	}
 	if err := s.Ack(ctx, deq1.JobID); err != nil {
 		t.Fatalf("failed to ack: %v", err)
 	}
-	if deq3, _ := s.Dequeue(ctx, "default"); deq3 != nil {
+	if deq3, _ := s.Dequeue(ctx, "default", nil); deq3 != nil {
 		t.Fatalf("expected jobC to be blocked, got %v", deq3)
 	}
 	assertComplexDAGSecondStep(t, ctx, s, deq2.JobID, jobC.JobID)
@@ -111,7 +111,7 @@ func assertComplexDAGSecondStep(t *testing.T, ctx context.Context, s *queue.Sqli
 	if err := s.Ack(ctx, deq2ID); err != nil {
 		t.Fatalf("failed to ack: %v", err)
 	}
-	deq3, _ := s.Dequeue(ctx, "default")
+	deq3, _ := s.Dequeue(ctx, "default", nil)
 	if deq3 == nil || deq3.JobID != jobCID {
 		t.Fatalf("expected to dequeue jobC, got %v", deq3)
 	}
@@ -142,7 +142,7 @@ func createTestJobsChain() (*queue.JobEnvelope, *queue.JobEnvelope, *queue.JobEn
 }
 
 func failJobOnce(t *testing.T, ctx context.Context, s *queue.SqliteStorage, jobID string) {
-	deq, _ := s.Dequeue(ctx, "default")
+	deq, _ := s.Dequeue(ctx, "default", nil)
 	if deq == nil || deq.JobID != jobID {
 		t.Fatalf("expected to dequeue %s, got %v", jobID, deq)
 	}

@@ -10,7 +10,7 @@ type mockStorageForWeights struct {
 	queries []string
 }
 
-func (m *mockStorageForWeights) Dequeue(ctx context.Context, queueName string) (*JobEnvelope, error) {
+func (m *mockStorageForWeights) Dequeue(ctx context.Context, queueName string, workerTags []string) (*JobEnvelope, error) {
 	m.queries = append(m.queries, queueName)
 	return nil, nil // return nil to force trying other queues
 }

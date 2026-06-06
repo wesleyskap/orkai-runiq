@@ -58,3 +58,23 @@ type sqlExecutor interface {
 	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 }
+
+// matchTags checks if a worker's tags satisfy all tags required by a job.
+func matchTags(jobTags, workerTags []string) bool {
+	if len(jobTags) == 0 {
+		return true
+	}
+	for _, jt := range jobTags {
+		found := false
+		for _, wt := range workerTags {
+			if jt == wt {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}

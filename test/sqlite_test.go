@@ -97,7 +97,7 @@ func assertSqliteEnqueueDequeue(t *testing.T, ctx context.Context, s *queue.Sqli
 		t.Fatalf("failed to enqueue to sqlite: %v", err)
 	}
 
-	deq, err := s.Dequeue(ctx, "sqlite-test-queue")
+	deq, err := s.Dequeue(ctx, "sqlite-test-queue", nil)
 	if err != nil {
 		t.Fatalf("failed to dequeue from sqlite: %v", err)
 	}
@@ -118,7 +118,7 @@ func assertSqliteRetryFlow(t *testing.T, ctx context.Context, s *queue.SqliteSto
 		t.Fatalf("failed to enqueue: %v", err)
 	}
 
-	deq, err := s.Dequeue(ctx, "sqlite-retry-queue")
+	deq, err := s.Dequeue(ctx, "sqlite-retry-queue", nil)
 	if err != nil || deq == nil {
 		t.Fatalf("failed to dequeue: %v", err)
 	}
@@ -130,7 +130,7 @@ func assertSqliteRetryFlow(t *testing.T, ctx context.Context, s *queue.SqliteSto
 
 	// In SQLite, after Fail, the job is still pending but run_at is in the future.
 	// Verify that a subsequent Dequeue returns nil (not ready yet because run_at is future)
-	deqFuture, err := s.Dequeue(ctx, "sqlite-retry-queue")
+	deqFuture, err := s.Dequeue(ctx, "sqlite-retry-queue", nil)
 	if err != nil {
 		t.Fatalf("dequeue failed: %v", err)
 	}
@@ -145,7 +145,7 @@ func assertSqliteRetryFlow(t *testing.T, ctx context.Context, s *queue.SqliteSto
 	}
 
 	// Dequeue again - should get the job back!
-	deq2, err := s.Dequeue(ctx, "sqlite-retry-queue")
+	deq2, err := s.Dequeue(ctx, "sqlite-retry-queue", nil)
 	if err != nil || deq2 == nil {
 		t.Fatalf("failed to dequeue retried job: %v", err)
 	}
@@ -168,7 +168,7 @@ func assertSqliteRetryFlow(t *testing.T, ctx context.Context, s *queue.SqliteSto
 	}
 
 	// Dequeue third time
-	deq3, err := s.Dequeue(ctx, "sqlite-retry-queue")
+	deq3, err := s.Dequeue(ctx, "sqlite-retry-queue", nil)
 	if err != nil || deq3 == nil {
 		t.Fatalf("failed to dequeue third time: %v", err)
 	}
@@ -183,7 +183,7 @@ func assertSqliteRetryFlow(t *testing.T, ctx context.Context, s *queue.SqliteSto
 
 	// Dequeue should return nil even if we force run_at (status should be dead)
 	_, _ = db.Exec("UPDATE runiq_jobs SET run_at = datetime('now', '-10 seconds') WHERE job_id = ?", "job-sqlite-retry-2")
-	deq4, err := s.Dequeue(ctx, "sqlite-retry-queue")
+	deq4, err := s.Dequeue(ctx, "sqlite-retry-queue", nil)
 	if err != nil {
 		t.Fatalf("dequeue failed: %v", err)
 	}
@@ -223,7 +223,7 @@ func assertSqliteAdminActions(t *testing.T, ctx context.Context, s *queue.Sqlite
 	}
 
 	// Test Retry of job-s2 after failure
-	deq, _ := s.Dequeue(ctx, "queue-s")
+	deq, _ := s.Dequeue(ctx, "queue-s", nil)
 	_ = s.Fail(ctx, deq.JobID, fmt.Errorf("some failure"))
 
 	// Force to failed status
@@ -275,7 +275,7 @@ func assertSqliteUniqueJobs(t *testing.T, ctx context.Context, s *queue.SqliteSt
 		t.Errorf("expected ErrDuplicateJob, got %v", err)
 	}
 
-	deq, err := s.Dequeue(ctx, "unique-queue-s")
+	deq, err := s.Dequeue(ctx, "unique-queue-s", nil)
 	if err != nil || deq == nil {
 		t.Fatalf("dequeue failed: %v", err)
 	}
@@ -410,7 +410,7 @@ func assertSqliteBatches(t *testing.T, ctx context.Context, s *queue.SqliteStora
 	}
 
 	// Dequeue job 1 and Ack
-	deq1, err := s.Dequeue(ctx, "default")
+	deq1, err := s.Dequeue(ctx, "default", nil)
 	if err != nil || deq1 == nil {
 		t.Fatalf("failed to dequeue job 1: %v (deq=%v)", err, deq1)
 	}
@@ -424,7 +424,7 @@ func assertSqliteBatches(t *testing.T, ctx context.Context, s *queue.SqliteStora
 	}
 
 	// Dequeue job 2 and Ack
-	deq2, err := s.Dequeue(ctx, "default")
+	deq2, err := s.Dequeue(ctx, "default", nil)
 	if err != nil || deq2 == nil {
 		t.Fatalf("failed to dequeue job 2: %v", err)
 	}
@@ -433,7 +433,7 @@ func assertSqliteBatches(t *testing.T, ctx context.Context, s *queue.SqliteStora
 	}
 
 	// After both jobs are acked and batch was sealed, callback should be enqueued
-	deqCallback, err := s.Dequeue(ctx, "default")
+	deqCallback, err := s.Dequeue(ctx, "default", nil)
 	if err != nil || deqCallback == nil {
 		t.Fatalf("failed to dequeue callback job: %v", err)
 	}

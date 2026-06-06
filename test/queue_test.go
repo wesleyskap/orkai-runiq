@@ -42,7 +42,7 @@ func (f *FakeStorage) Enqueue(ctx context.Context, env *queue.JobEnvelope) error
 	return nil
 }
 
-func (f *FakeStorage) Dequeue(ctx context.Context, queueName string) (*queue.JobEnvelope, error) {
+func (f *FakeStorage) Dequeue(ctx context.Context, queueName string, workerTags []string) (*queue.JobEnvelope, error) {
 	if len(f.Enqueued) == 0 {
 		return nil, errors.New("queue empty")
 	}

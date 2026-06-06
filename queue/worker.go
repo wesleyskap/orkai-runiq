@@ -78,6 +78,7 @@ type WorkerPool struct {
 	intervalJobs       []IntervalJob
 	lastIntervalTicks  map[string]int64
 	intervalMutex      sync.Mutex
+	tags               []string
 }
 
 func getWorkerProcessID() string {
@@ -130,6 +131,13 @@ func WithWorkerLogger(l Logger) WorkerOption {
 func WithQueueWeights(weights map[string]int) WorkerOption {
 	return func(w *WorkerPool) {
 		w.weights = weights
+	}
+}
+
+// WithWorkerTags configures matching capability tags for the worker pool.
+func WithWorkerTags(tags ...string) WorkerOption {
+	return func(w *WorkerPool) {
+		w.tags = tags
 	}
 }
 
@@ -392,7 +400,7 @@ func (w *WorkerPool) dequeueFromQueue(ctx context.Context, q string) (*JobEnvelo
 	if err == nil && paused {
 		return nil, nil
 	}
-	return w.storage.Dequeue(ctx, q)
+	return w.storage.Dequeue(ctx, q, w.tags)
 }
 
 func (w *WorkerPool) checkAndDequeue(ctx context.Context, q string) (*JobEnvelope, error) {
