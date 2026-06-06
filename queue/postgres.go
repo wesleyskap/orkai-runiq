@@ -64,6 +64,10 @@ func (p *PostgresStorage) initTables(ctx context.Context) error {
 }
 
 func (p *PostgresStorage) runMigrations(ctx context.Context) {
+	_, _ = p.db.ExecContext(ctx, p.q("ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS priority INT NOT NULL DEFAULT 0"))
+	_, _ = p.db.ExecContext(ctx, p.q("ALTER TABLE runiq_jobs ADD COLUMN IF NOT EXISTS tags TEXT DEFAULT ''"))
+	_, _ = p.db.ExecContext(ctx, p.q("ALTER TABLE runiq_archived_jobs ADD COLUMN IF NOT EXISTS priority INT NOT NULL DEFAULT 0"))
+	_, _ = p.db.ExecContext(ctx, p.q("ALTER TABLE runiq_archived_jobs ADD COLUMN IF NOT EXISTS tags TEXT DEFAULT ''"))
 	_, _ = p.db.ExecContext(ctx, p.q("ALTER TABLE runiq_batches ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE"))
 	_, _ = p.db.ExecContext(ctx, p.q("ALTER TABLE runiq_cron_jobs ADD COLUMN IF NOT EXISTS timezone VARCHAR(50) DEFAULT 'UTC'"))
 	_, _ = p.db.ExecContext(ctx, p.q("ALTER TABLE runiq_processes ADD COLUMN IF NOT EXISTS min_concurrency INT NOT NULL DEFAULT 0"))
@@ -141,34 +145,82 @@ func (p *PostgresStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
 }
 
 func (p *PostgresStorage) insertJob(ctx context.Context, env *JobEnvelope, runAt time.Time, maxAttempts int) error {
+	tagsStr := strings.Join(env.Tags, ",")
 	query := `
-		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status, attempts, max_attempts, run_at, unique_key)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending', 0, $7, $8, $9)
+		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status, attempts, max_attempts, run_at, unique_key, priority, tags)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending', 0, $7, $8, $9, $10, $11)
 		ON CONFLICT (job_id) DO UPDATE SET
-			status = 'pending', attempts = 0, max_attempts = $7, run_at = $8, unique_key = $9, updated_at = CURRENT_TIMESTAMP`
+			status = 'pending', attempts = 0, max_attempts = $7, run_at = $8, unique_key = $9, priority = $10, tags = $11, updated_at = CURRENT_TIMESTAMP`
 	_, err := p.db.ExecContext(ctx, p.q(query),
 		env.JobID, env.Queue, env.Name, env.Args, env.TraceContext.TraceID, env.TraceContext.SpanID,
-		maxAttempts, runAt, env.UniqueKey)
+		maxAttempts, runAt, env.UniqueKey, env.Priority, tagsStr)
 	return err
 }
 
-// Dequeue fetches the next pending job from PostgreSQL using FOR UPDATE SKIP LOCKED.
-func (p *PostgresStorage) Dequeue(ctx context.Context, queueName string) (*JobEnvelope, error) {
+// Dequeue fetches the next pending job from PostgreSQL.
+func (p *PostgresStorage) Dequeue(ctx context.Context, queueName string, workerTags []string) (*JobEnvelope, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	env, err := p.dequeueTx(ctx, tx, queueName, workerTags)
+	if err != nil || env == nil {
+		return env, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return env, nil
+}
+
+func (p *PostgresStorage) dequeueTx(ctx context.Context, tx *sql.Tx, queueName string, workerTags []string) (*JobEnvelope, error) {
+	query := `
+		SELECT job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id, priority, tags
+		FROM runiq_jobs
+		WHERE queue = $1 AND status = 'pending' AND (run_at IS NULL OR run_at <= CURRENT_TIMESTAMP)
+		ORDER BY priority DESC, created_at ASC LIMIT 100`
+	rows, err := tx.QueryContext(ctx, p.q(query), queueName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return p.lockFirstMatch(ctx, tx, rows, workerTags)
+}
+
+func (p *PostgresStorage) lockFirstMatch(ctx context.Context, tx *sql.Tx, rows *sql.Rows, workerTags []string) (*JobEnvelope, error) {
+	for rows.Next() {
+		env, err := scanJobFrom(rows)
+		if err != nil {
+			return nil, err
+		}
+		if matchTags(env.Tags, workerTags) {
+			locked, err := p.tryLockJob(ctx, tx, env.JobID)
+			if err != nil {
+				return nil, err
+			}
+			if locked != nil {
+				return locked, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (p *PostgresStorage) tryLockJob(ctx context.Context, tx *sql.Tx, jobID string) (*JobEnvelope, error) {
 	query := `
 		UPDATE runiq_jobs SET status = 'running', locked_at = CURRENT_TIMESTAMP
 		WHERE job_id = (
 			SELECT job_id FROM runiq_jobs
-			WHERE queue = $1 AND status = 'pending' AND (run_at IS NULL OR run_at <= CURRENT_TIMESTAMP)
-			ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1
+			WHERE job_id = $1 AND status = 'pending' FOR UPDATE SKIP LOCKED
 		)
-		RETURNING job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id`
-	row := p.db.QueryRowContext(ctx, p.q(query), queueName)
-	var env JobEnvelope
-	err := row.Scan(&env.JobID, &env.Queue, &env.Name, &env.Args, &env.TraceContext.TraceID, &env.TraceContext.SpanID, &env.Attempts, &env.MaxAttempts, &env.UniqueKey, &env.BatchID)
+		RETURNING job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id, priority, tags`
+	row := tx.QueryRowContext(ctx, p.q(query), jobID)
+	env, err := scanJobFrom(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
-	return &env, err
+	return env, err
 }
 
 // PollScheduled is a no-op for PostgreSQL since Dequeue filters by run_at natively.
@@ -225,7 +277,8 @@ var postgresTables = []string{
 		attempts INT DEFAULT 0, max_attempts INT DEFAULT 3, error_message TEXT DEFAULT '',
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		locked_at TIMESTAMP WITH TIME ZONE, run_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-		unique_key VARCHAR(255) DEFAULT '', batch_id VARCHAR(255) DEFAULT ''
+		unique_key VARCHAR(255) DEFAULT '', batch_id VARCHAR(255) DEFAULT '',
+		priority INT NOT NULL DEFAULT 0, tags TEXT DEFAULT ''
 	)`,
 	`CREATE TABLE IF NOT EXISTS runiq_archived_jobs (
 		job_id VARCHAR(255) PRIMARY KEY, queue VARCHAR(255) NOT NULL, name VARCHAR(255) NOT NULL, args BYTEA NOT NULL,
@@ -233,7 +286,8 @@ var postgresTables = []string{
 		attempts INT DEFAULT 0, max_attempts INT DEFAULT 3, error_message TEXT DEFAULT '',
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		locked_at TIMESTAMP WITH TIME ZONE, run_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-		unique_key VARCHAR(255) DEFAULT '', batch_id VARCHAR(255) DEFAULT ''
+		unique_key VARCHAR(255) DEFAULT '', batch_id VARCHAR(255) DEFAULT '',
+		priority INT NOT NULL DEFAULT 0, tags TEXT DEFAULT ''
 	)`,
 	`CREATE TABLE IF NOT EXISTS runiq_unique_locks (
 		lock_key VARCHAR(255) PRIMARY KEY, job_id VARCHAR(255) NOT NULL, expires_at TIMESTAMP WITH TIME ZONE NOT NULL

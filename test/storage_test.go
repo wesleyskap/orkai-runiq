@@ -141,7 +141,7 @@ func assertPostgresEnqueueDequeue(t *testing.T, ctx context.Context, s *queue.Po
 		t.Fatalf("failed to enqueue to postgres: %v", err)
 	}
 
-	deq, err := s.Dequeue(ctx, "postgres-test-queue")
+	deq, err := s.Dequeue(ctx, "postgres-test-queue", nil)
 	if err != nil {
 		t.Fatalf("failed to dequeue from postgres: %v", err)
 	}
@@ -169,7 +169,7 @@ func assertPostgresSkipLockedConcurrency(t *testing.T, ctx context.Context, s *q
 		go func() {
 			defer wg.Done()
 			// Simulate concurrency competition
-			deq, err := s.Dequeue(ctx, "concurrent")
+			deq, err := s.Dequeue(ctx, "concurrent", nil)
 			if err == nil && deq != nil {
 				results <- deq.JobID
 			}
@@ -208,7 +208,7 @@ func assertRedisEnqueueDequeue(t *testing.T, ctx context.Context, s *queue.Redis
 		t.Errorf("expected 1 pending job, got %d", stats.Pending)
 	}
 
-	deq, err := s.Dequeue(ctx, "redis-test-queue")
+	deq, err := s.Dequeue(ctx, "redis-test-queue", nil)
 	if err != nil {
 		t.Fatalf("failed to dequeue from redis: %v", err)
 	}
@@ -246,7 +246,7 @@ func assertRedisRetryFlow(t *testing.T, ctx context.Context, s *queue.RedisStora
 		t.Fatalf("failed to enqueue: %v", err)
 	}
 
-	deq, err := s.Dequeue(ctx, "redis-retry-queue")
+	deq, err := s.Dequeue(ctx, "redis-retry-queue", nil)
 	if err != nil || deq == nil {
 		t.Fatalf("failed to dequeue: %v", err)
 	}
@@ -274,7 +274,7 @@ func assertRedisRetryFlow(t *testing.T, ctx context.Context, s *queue.RedisStora
 	}
 
 	// Dequeue again - should get the job back!
-	deq2, err := s.Dequeue(ctx, "redis-retry-queue")
+	deq2, err := s.Dequeue(ctx, "redis-retry-queue", nil)
 	if err != nil || deq2 == nil {
 		t.Fatalf("failed to dequeue retried job: %v", err)
 	}
@@ -295,7 +295,7 @@ func assertRedisRetryFlow(t *testing.T, ctx context.Context, s *queue.RedisStora
 	_ = s.PollScheduled(ctx, "redis-retry-queue")
 
 	// Dequeue third time
-	deq3, err := s.Dequeue(ctx, "redis-retry-queue")
+	deq3, err := s.Dequeue(ctx, "redis-retry-queue", nil)
 	if err != nil || deq3 == nil {
 		t.Fatalf("failed to dequeue third time: %v", err)
 	}
@@ -344,7 +344,7 @@ func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s *queue.Postgre
 		t.Fatalf("failed to enqueue: %v", err)
 	}
 
-	deq, err := s.Dequeue(ctx, "postgres-retry-queue")
+	deq, err := s.Dequeue(ctx, "postgres-retry-queue", nil)
 	if err != nil || deq == nil {
 		t.Fatalf("failed to dequeue: %v", err)
 	}
@@ -356,7 +356,7 @@ func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s *queue.Postgre
 
 	// In Postgres, after Fail, the job is still pending but run_at is in the future.
 	// Let's verify that a subsequent Dequeue returns nil (not ready yet because run_at is future)
-	deqFuture, err := s.Dequeue(ctx, "postgres-retry-queue")
+	deqFuture, err := s.Dequeue(ctx, "postgres-retry-queue", nil)
 	if err != nil {
 		t.Fatalf("dequeue failed: %v", err)
 	}
@@ -371,7 +371,7 @@ func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s *queue.Postgre
 	}
 
 	// Dequeue again - should get the job back!
-	deq2, err := s.Dequeue(ctx, "postgres-retry-queue")
+	deq2, err := s.Dequeue(ctx, "postgres-retry-queue", nil)
 	if err != nil || deq2 == nil {
 		t.Fatalf("failed to dequeue retried job: %v", err)
 	}
@@ -394,7 +394,7 @@ func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s *queue.Postgre
 	}
 
 	// Dequeue third time
-	deq3, err := s.Dequeue(ctx, "postgres-retry-queue")
+	deq3, err := s.Dequeue(ctx, "postgres-retry-queue", nil)
 	if err != nil || deq3 == nil {
 		t.Fatalf("failed to dequeue third time: %v", err)
 	}
@@ -412,7 +412,7 @@ func assertPostgresRetryFlow(t *testing.T, ctx context.Context, s *queue.Postgre
 	if dbErr != nil {
 		t.Fatalf("failed to force run_at: %v", dbErr)
 	}
-	deq4, err := s.Dequeue(ctx, "postgres-retry-queue")
+	deq4, err := s.Dequeue(ctx, "postgres-retry-queue", nil)
 	if err != nil {
 		t.Fatalf("dequeue failed: %v", err)
 	}
@@ -469,7 +469,7 @@ func assertPostgresAdminActions(t *testing.T, ctx context.Context, s *queue.Post
 	}
 
 	// Test Retry of job-p2 after failure
-	deq, _ := s.Dequeue(ctx, "queue-p")
+	deq, _ := s.Dequeue(ctx, "queue-p", nil)
 	_ = s.Fail(ctx, deq.JobID, fmt.Errorf("some failure"))
 
 	// Force to failed status
@@ -527,7 +527,7 @@ func assertRedisAdminActions(t *testing.T, ctx context.Context, s *queue.RedisSt
 	}
 
 	// Test Retry of job-r2 after failure
-	deq, _ := s.Dequeue(ctx, "queue-r")
+	deq, _ := s.Dequeue(ctx, "queue-r", nil)
 	_ = s.Fail(ctx, deq.JobID, fmt.Errorf("some failure"))
 
 	// Manually simulate job failed list
@@ -590,7 +590,7 @@ func assertPostgresUniqueJobs(t *testing.T, ctx context.Context, s *queue.Postgr
 		t.Errorf("expected ErrDuplicateJob, got %v", err)
 	}
 
-	deq, err := s.Dequeue(ctx, "unique-queue-p")
+	deq, err := s.Dequeue(ctx, "unique-queue-p", nil)
 	if err != nil || deq == nil {
 		t.Fatalf("dequeue failed: %v", err)
 	}
@@ -630,7 +630,7 @@ func assertRedisUniqueJobs(t *testing.T, ctx context.Context, s *queue.RedisStor
 		t.Errorf("expected ErrDuplicateJob, got %v", err)
 	}
 
-	deq, err := s.Dequeue(ctx, "unique-queue-r")
+	deq, err := s.Dequeue(ctx, "unique-queue-r", nil)
 	if err != nil || deq == nil {
 		t.Fatalf("dequeue failed: %v", err)
 	}
@@ -797,7 +797,7 @@ func assertRedisThrottling(t *testing.T, ctx context.Context, s *queue.RedisStor
 	}
 
 	// Move job to active in Redis (simulate dequeue)
-	_, err := s.Dequeue(ctx, env.Queue)
+	_, err := s.Dequeue(ctx, env.Queue, nil)
 	if err != nil {
 		t.Fatalf("dequeue failed: %v", err)
 	}

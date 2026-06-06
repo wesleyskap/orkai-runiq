@@ -175,6 +175,18 @@ func NewJob(queueName, name string, args []byte) *JobEnvelope {
 	}
 }
 
+// WithPriority sets the priority for the job envelope.
+func (env *JobEnvelope) WithPriority(priority int) *JobEnvelope {
+	env.Priority = priority
+	return env
+}
+
+// RequireTags configures the job envelope to require specific worker tags.
+func (env *JobEnvelope) RequireTags(tags ...string) *JobEnvelope {
+	env.Tags = tags
+	return env
+}
+
 // DependsOn adds parentJobID dependencies to the job.
 // Usage example:
 //
@@ -183,6 +195,27 @@ func (env *JobEnvelope) DependsOn(parent *JobEnvelope) {
 	if parent != nil && parent.JobID != "" {
 		env.Dependencies = append(env.Dependencies, parent.JobID)
 	}
+}
+
+// EnqueueJob enqueues a pre-constructed job envelope.
+func (c *Client) EnqueueJob(ctx context.Context, env *JobEnvelope) error {
+	if env.JobID == "" {
+		env.JobID = generateJobID()
+	}
+	if env.MaxAttempts <= 0 {
+		env.MaxAttempts = 3
+	}
+	traceID, spanID := c.tracer.ExtractTrace(ctx)
+	if env.TraceContext.TraceID == "" {
+		env.TraceContext.TraceID = traceID
+		env.TraceContext.SpanID = spanID
+	}
+	if err := c.encryptEnvelope(env); err != nil {
+		return err
+	}
+	return c.execute(func() error {
+		return c.storage.Enqueue(ctx, env)
+	})
 }
 
 // EnqueueWorkflow enqueues multiple dependent jobs transactionally.

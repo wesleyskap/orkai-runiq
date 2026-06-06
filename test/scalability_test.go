@@ -171,11 +171,11 @@ func runNamespaceIsolationTest(t *testing.T, store1, store2 queue.WorkerPoolStor
 }
 
 func assertNsIsolation(t *testing.T, ctx context.Context, store1, store2 queue.WorkerPoolStorage, jobID string) {
-	deq1, err1 := store1.Dequeue(ctx, "q1")
+	deq1, err1 := store1.Dequeue(ctx, "q1", nil)
 	if err1 != nil || deq1 == nil || deq1.JobID != jobID {
 		t.Fatalf("store1 failed to dequeue: %v, %v", deq1, err1)
 	}
-	deq2, err2 := store2.Dequeue(ctx, "q1")
+	deq2, err2 := store2.Dequeue(ctx, "q1", nil)
 	if err2 != nil || deq2 != nil {
 		t.Fatalf("store2 dequeued cross-tenant job: %v, %v", deq2, err2)
 	}
@@ -187,7 +187,7 @@ func runArchivalTest(t *testing.T, store queue.WorkerPoolStorage) {
 		JobID: "job-arc-1", Queue: "q2", Name: "JobArc", Args: []byte("{}"),
 	}
 	_ = store.Enqueue(ctx, env)
-	deq, _ := store.Dequeue(ctx, "q2")
+	deq, _ := store.Dequeue(ctx, "q2", nil)
 	_ = store.Ack(ctx, deq.JobID)
 	count, err := store.ArchiveJobs(ctx, 0)
 	if err != nil || count != 1 {
@@ -197,7 +197,7 @@ func runArchivalTest(t *testing.T, store queue.WorkerPoolStorage) {
 }
 
 func assertJobArchived(t *testing.T, ctx context.Context, store queue.WorkerPoolStorage, jobID string) {
-	deq, err := store.Dequeue(ctx, "q2")
+	deq, err := store.Dequeue(ctx, "q2", nil)
 	if err != nil || deq != nil {
 		t.Fatalf("job still active after archiving: %v, %v", deq, err)
 	}

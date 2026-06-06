@@ -2,6 +2,12 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [3.3.0] - 2026-06-06
+
+### Added
+- **Job-Level Priority**: Support for specifying integer priority weights on jobs (higher runs first), implemented across SQLite, PostgreSQL, and Redis backends.
+- **Worker Affinity & Hardware Tags**: Support for worker pools with matching capability tags and jobs with required tags. Tagged jobs are only consumed by workers that have the matching tags.
+
 ## [3.2.0] - 2026-06-05
 
 ### Added

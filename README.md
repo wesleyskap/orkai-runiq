@@ -887,6 +887,27 @@ For development or small standalone instances without external dependencies:
   .\runiq.exe --driver redis --dsn "redis://localhost:6379/0" --queue email,sms --concurrency 20
   ```
 
+## Advanced Queueing & Routing
+
+### Job-Level Priority
+Jobs inside the same queue can be assigned integer priority weights (default `0`, higher values are processed first).
+```go
+// Create a job with priority 100
+job := queue.NewJob("default", "HighPriorityTask", payload).WithPriority(100)
+err := client.EnqueueJob(ctx, job)
+```
+
+### Worker Affinity & Hardware Tags
+You can restrict jobs to run only on workers configured with specific hardware capability tags. A job requiring tags will only be dequeued by a worker pool that possesses all of those required tags.
+```go
+// Require "gpu" and "high-mem" tags for the job
+job := queue.NewJob("default", "TrainModel", payload).RequireTags("gpu", "high-mem")
+err := client.EnqueueJob(ctx, job)
+
+// Configure a WorkerPool with matching capability tags
+pool := queue.NewWorkerPool(storage, 5, queue.WithWorkerTags("gpu", "high-mem", "nvme"))
+```
+
 ## Running Tests
 
 ```powershell

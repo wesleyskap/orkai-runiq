@@ -23,6 +23,7 @@ type JobEnvelope struct {
 	TraceContext TraceContext  `json:"trace_context"`
 	Args         []byte        `json:"args"`
 	Dependencies []string      `json:"dependencies,omitempty"`
+	Tags         []string      `json:"tags,omitempty"`
 	JobID        string        `json:"job_id"`
 	Queue        string        `json:"queue"`
 	Name         string        `json:"name"`
@@ -30,6 +31,7 @@ type JobEnvelope struct {
 	BatchID      string        `json:"batch_id,omitempty"`
 	RunAt        *time.Time    `json:"run_at,omitempty"`
 	UniqueTTL    time.Duration `json:"unique_ttl,omitempty"`
+	Priority     int           `json:"priority"`
 	Attempts     int           `json:"attempts"`
 	MaxAttempts  int           `json:"max_attempts"`
 }
@@ -96,10 +98,10 @@ type JobQueue interface {
 	//	err := storage.Enqueue(ctx, envelope)
 	Enqueue(ctx context.Context, env *JobEnvelope) error
 
-	// Dequeue fetches the next pending job from the storage backend.
+	// Dequeue fetches the next pending job from the storage backend matching worker tags.
 	// Usage example:
-	//	env, err := storage.Dequeue(ctx, "default")
-	Dequeue(ctx context.Context, queue string) (*JobEnvelope, error)
+	//	env, err := storage.Dequeue(ctx, "default", []string{"gpu"})
+	Dequeue(ctx context.Context, queue string, workerTags []string) (*JobEnvelope, error)
 
 	// Ack marks a job as successfully completed in storage.
 	// Usage example:

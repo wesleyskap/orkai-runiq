@@ -66,6 +66,10 @@ func (s *SqliteStorage) initTables(ctx context.Context) error {
 }
 
 func (s *SqliteStorage) runMigrations(ctx context.Context) {
+	_, _ = s.db.ExecContext(ctx, s.q("ALTER TABLE runiq_jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0"))
+	_, _ = s.db.ExecContext(ctx, s.q("ALTER TABLE runiq_jobs ADD COLUMN tags TEXT DEFAULT ''"))
+	_, _ = s.db.ExecContext(ctx, s.q("ALTER TABLE runiq_archived_jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0"))
+	_, _ = s.db.ExecContext(ctx, s.q("ALTER TABLE runiq_archived_jobs ADD COLUMN tags TEXT DEFAULT ''"))
 	_, _ = s.db.ExecContext(ctx, s.q("ALTER TABLE runiq_batches ADD COLUMN expires_at DATETIME"))
 	_, _ = s.db.ExecContext(ctx, s.q("ALTER TABLE runiq_cron_jobs ADD COLUMN timezone TEXT DEFAULT 'UTC'"))
 	_, _ = s.db.ExecContext(ctx, s.q("ALTER TABLE runiq_processes ADD COLUMN min_concurrency INTEGER NOT NULL DEFAULT 0"))
@@ -143,24 +147,26 @@ func (s *SqliteStorage) Enqueue(ctx context.Context, env *JobEnvelope) error {
 }
 
 func (s *SqliteStorage) insertJob(ctx context.Context, env *JobEnvelope, runAt time.Time, maxAttempts int) error {
+	tagsStr := strings.Join(env.Tags, ",")
 	query := `
-		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status, attempts, max_attempts, run_at, unique_key)
-		VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+		INSERT INTO runiq_jobs (job_id, queue, name, args, trace_id, span_id, status, attempts, max_attempts, run_at, unique_key, priority, tags)
+		VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)
 		ON CONFLICT (job_id) DO UPDATE SET
-			status = 'pending', attempts = 0, max_attempts = ?, run_at = ?, unique_key = ?, updated_at = CURRENT_TIMESTAMP`
+			status = 'pending', attempts = 0, max_attempts = ?, run_at = ?, unique_key = ?, priority = ?, tags = ?, updated_at = CURRENT_TIMESTAMP`
 	_, err := s.db.ExecContext(ctx, s.q(query),
 		env.JobID, env.Queue, env.Name, env.Args, env.TraceContext.TraceID, env.TraceContext.SpanID,
-		maxAttempts, runAt, env.UniqueKey, maxAttempts, runAt, env.UniqueKey)
+		maxAttempts, runAt, env.UniqueKey, env.Priority, tagsStr,
+		maxAttempts, runAt, env.UniqueKey, env.Priority, tagsStr)
 	return err
 }
 
-func (s *SqliteStorage) Dequeue(ctx context.Context, queueName string) (*JobEnvelope, error) {
+func (s *SqliteStorage) Dequeue(ctx context.Context, queueName string, workerTags []string) (*JobEnvelope, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	env, err := s.dequeueTx(ctx, tx, queueName)
+	env, err := s.dequeueTx(ctx, tx, queueName, workerTags)
 	if err != nil || env == nil {
 		return env, err
 	}
@@ -170,23 +176,58 @@ func (s *SqliteStorage) Dequeue(ctx context.Context, queueName string) (*JobEnve
 	return env, nil
 }
 
-func (s *SqliteStorage) dequeueTx(ctx context.Context, tx *sql.Tx, queueName string) (*JobEnvelope, error) {
-	query := `
-		UPDATE runiq_jobs SET status = 'running', locked_at = CURRENT_TIMESTAMP
-		WHERE job_id = (
-			SELECT job_id FROM runiq_jobs
-			WHERE queue = ? AND status = 'pending' AND (run_at IS NULL OR strftime('%s', run_at) <= strftime('%s', 'now'))
-			ORDER BY created_at ASC LIMIT 1
-		)
-		RETURNING job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id`
+type scannable interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanJobFrom(s scannable) (*JobEnvelope, error) {
 	var env JobEnvelope
-	err := tx.QueryRowContext(ctx, s.q(query), queueName).Scan(
+	var tagsStr string
+	err := s.Scan(
 		&env.JobID, &env.Queue, &env.Name, &env.Args, &env.TraceContext.TraceID,
-		&env.TraceContext.SpanID, &env.Attempts, &env.MaxAttempts, &env.UniqueKey, &env.BatchID)
-	if err == sql.ErrNoRows {
-		return nil, nil
+		&env.TraceContext.SpanID, &env.Attempts, &env.MaxAttempts, &env.UniqueKey, &env.BatchID,
+		&env.Priority, &tagsStr,
+	)
+	if err != nil {
+		return nil, err
 	}
-	return &env, err
+	if tagsStr != "" {
+		env.Tags = strings.Split(tagsStr, ",")
+	}
+	return &env, nil
+}
+
+func findMatchingJob(rows *sql.Rows, workerTags []string) (*JobEnvelope, error) {
+	for rows.Next() {
+		env, err := scanJobFrom(rows)
+		if err != nil {
+			return nil, err
+		}
+		if matchTags(env.Tags, workerTags) {
+			return env, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *SqliteStorage) dequeueTx(ctx context.Context, tx *sql.Tx, queueName string, workerTags []string) (*JobEnvelope, error) {
+	query := `
+		SELECT job_id, queue, name, args, trace_id, span_id, attempts, max_attempts, unique_key, batch_id, priority, tags
+		FROM runiq_jobs
+		WHERE queue = ? AND status = 'pending' AND (run_at IS NULL OR strftime('%s', run_at) <= strftime('%s', 'now'))
+		ORDER BY priority DESC, created_at ASC LIMIT 100`
+	rows, err := tx.QueryContext(ctx, s.q(query), queueName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	selected, err := findMatchingJob(rows, workerTags)
+	if err != nil || selected == nil {
+		return selected, err
+	}
+	upd := "UPDATE runiq_jobs SET status = 'running', locked_at = CURRENT_TIMESTAMP WHERE job_id = ?"
+	_, err = tx.ExecContext(ctx, s.q(upd), selected.JobID)
+	return selected, err
 }
 
 func (s *SqliteStorage) PollScheduled(ctx context.Context, queue string) error {
@@ -253,14 +294,16 @@ var sqliteTables = []string{
 		trace_id TEXT DEFAULT '', span_id TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'pending',
 		attempts INTEGER DEFAULT 0, max_attempts INTEGER DEFAULT 3, error_message TEXT DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		locked_at DATETIME, run_at DATETIME DEFAULT CURRENT_TIMESTAMP, unique_key TEXT DEFAULT '', batch_id TEXT DEFAULT ''
+		locked_at DATETIME, run_at DATETIME DEFAULT CURRENT_TIMESTAMP, unique_key TEXT DEFAULT '', batch_id TEXT DEFAULT '',
+		priority INTEGER NOT NULL DEFAULT 0, tags TEXT DEFAULT ''
 	)`,
 	`CREATE TABLE IF NOT EXISTS runiq_archived_jobs (
 		job_id TEXT PRIMARY KEY, queue TEXT NOT NULL, name TEXT NOT NULL, args BLOB NOT NULL,
 		trace_id TEXT DEFAULT '', span_id TEXT DEFAULT '', status TEXT NOT NULL,
 		attempts INTEGER DEFAULT 0, max_attempts INTEGER DEFAULT 3, error_message TEXT DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		locked_at DATETIME, run_at DATETIME DEFAULT CURRENT_TIMESTAMP, unique_key TEXT DEFAULT '', batch_id TEXT DEFAULT ''
+		locked_at DATETIME, run_at DATETIME DEFAULT CURRENT_TIMESTAMP, unique_key TEXT DEFAULT '', batch_id TEXT DEFAULT '',
+		priority INTEGER NOT NULL DEFAULT 0, tags TEXT DEFAULT ''
 	)`,
 	`CREATE TABLE IF NOT EXISTS runiq_unique_locks (
 		lock_key TEXT PRIMARY KEY, job_id TEXT NOT NULL, expires_at DATETIME NOT NULL
