@@ -547,7 +547,7 @@ func assertRedisAdminActions(t *testing.T, ctx context.Context, s *queue.RedisSt
 	if errExists {
 		t.Error("expected job-r2 error to be deleted")
 	}
-	pendingLen, _ := client.LLen(ctx, "runiq:queue:queue-r").Result()
+	pendingLen, _ := client.ZCard(ctx, "runiq:queue:queue-r").Result()
 	if pendingLen == 0 {
 		t.Error("expected job-r2 to be pushed back to pending list")
 	}
@@ -556,7 +556,7 @@ func assertRedisAdminActions(t *testing.T, ctx context.Context, s *queue.RedisSt
 	if err := s.ClearQueue(ctx, "queue-r"); err != nil {
 		t.Fatalf("failed to clear queue: %v", err)
 	}
-	pendingLen, _ = client.LLen(ctx, "runiq:queue:queue-r").Result()
+	pendingLen, _ = client.ZCard(ctx, "runiq:queue:queue-r").Result()
 	if pendingLen != 0 {
 		t.Errorf("expected pending list to be cleared, got len %d", pendingLen)
 	}

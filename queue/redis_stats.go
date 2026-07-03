@@ -114,7 +114,7 @@ func (r *RedisStorage) getPausedQueuesMap(ctx context.Context) (map[string]bool,
 
 func (r *RedisStorage) getQueueStats(ctx context.Context, q string) (*QueueStats, error) {
 	pipe := r.client.Pipeline()
-	pendingCmd := pipe.LLen(ctx, r.k("runiq:queue:"+q))
+	pendingCmd := pipe.ZCard(ctx, r.k("runiq:queue:"+q))
 	scheduledCmd := pipe.ZCard(ctx, r.k("runiq:scheduled:"+q))
 	activeCmd := pipe.SCard(ctx, r.k("runiq:active:"+q))
 	processedCmd := pipe.LLen(ctx, r.k("runiq:processed:"+q))
@@ -151,7 +151,7 @@ func (r *RedisStorage) accumulateQueueTotals(stats *Stats, qs *QueueStats) {
 }
 
 func (r *RedisStorage) collectRecentJobIDs(ctx context.Context, q string, allJobIDs *[]string, jobsMeta *[]jobMeta) {
-	r.appendJobIDs(r.fetchList(ctx, r.k("runiq:queue:"+q)), q, "pending", allJobIDs, jobsMeta)
+	r.appendJobIDs(r.fetchZSet(ctx, r.k("runiq:queue:"+q)), q, "pending", allJobIDs, jobsMeta)
 	r.appendJobIDs(r.fetchZSet(ctx, r.k("runiq:scheduled:"+q)), q, "pending", allJobIDs, jobsMeta)
 	r.appendJobIDs(r.fetchSet(ctx, r.k("runiq:active:"+q)), q, "running", allJobIDs, jobsMeta)
 	r.appendJobIDs(r.fetchList(ctx, r.k("runiq:processed:"+q)), q, "processed", allJobIDs, jobsMeta)

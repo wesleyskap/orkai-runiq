@@ -180,7 +180,7 @@ func verifyRedisBatchFails(t *testing.T, ctx context.Context, store *queue.Redis
 }
 
 func assertRedisQueueLength(t *testing.T, ctx context.Context, client *redis.Client, expected int) {
-	length, err := client.LLen(ctx, "runiq:queue:batch-timeout-redis-queue").Result()
+	length, err := client.ZCard(ctx, "runiq:queue:batch-timeout-redis-queue").Result()
 	if err != nil {
 		t.Fatalf("failed to get queue length: %v", err)
 	}
