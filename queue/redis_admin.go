@@ -181,7 +181,8 @@ func (r *RedisStorage) executeRetryTx(ctx context.Context, env *JobEnvelope) err
 	pipe.ZRem(ctx, r.k("runiq:dead_ttl"), env.Queue+":"+env.JobID)
 	pipe.HDel(ctx, r.k("runiq:errors"), env.JobID)
 	pipe.Decr(ctx, r.k("runiq:dead_count:"+env.Queue))
-	pipe.LPush(ctx, r.k("runiq:queue:"+env.Queue), env.JobID)
+	score := float64(env.Priority) - float64(time.Now().Unix())/1e11
+	pipe.ZAdd(ctx, r.k("runiq:queue:"+env.Queue), redis.Z{Score: score, Member: env.JobID})
 	_, err = pipe.Exec(ctx)
 	return err
 }
@@ -206,7 +207,7 @@ func (r *RedisStorage) Cancel(ctx context.Context, jobID string) error {
 
 func (r *RedisStorage) executeCancelTx(ctx context.Context, env *JobEnvelope) error {
 	pipe := r.client.TxPipeline()
-	pipe.LRem(ctx, r.k("runiq:queue:"+env.Queue), 0, env.JobID)
+	pipe.ZRem(ctx, r.k("runiq:queue:"+env.Queue), env.JobID)
 	pipe.SRem(ctx, r.k("runiq:active:"+env.Queue), env.JobID)
 	pipe.ZRem(ctx, r.k("runiq:scheduled:"+env.Queue), env.JobID)
 	pipe.LRem(ctx, r.k("runiq:failed:"+env.Queue), 0, env.JobID)
