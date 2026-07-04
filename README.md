@@ -21,7 +21,7 @@ Orkai Runiq is a background job processor in Go. It is designed to be standalone
 * **PostgresStorage**: PostgreSQL driver implementing the Storage interface, utilizing FOR UPDATE SKIP LOCKED for concurrent dequeue safety, auto-creating schema tables, tracking `run_at` scheduled times, moving jobs exceeding `max_attempts` to `'dead'` (DLQ) state, calculating job stats (Pending, Active, Processed, and Dead/Failed), and enforcing concurrency/rate limits using a transactional rate limits log table.
 
 ### queue/redis.go
-* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined list and hash operations, ZSets for future `run_at` schedules, isolating exhausted jobs in `runiq:dead:{queue}` lists (DLQ), tracking queue stats (Pending, Active, Processed, and Dead/Failed) using dedicated Redis Lists, and enforcing concurrency/rate limits using sliding-window sorted sets.
+* **RedisStorage**: Redis driver implementing the Storage interface, utilizing pipelined sorted set (ZSet) and hash operations, ZSets for future `run_at` schedules, isolating exhausted jobs in `runiq:dead:{queue}` lists (DLQ), tracking queue stats using dedicated Redis ZSets for pending/scheduled states and Lists for processed/dead states, and enforcing concurrency/rate limits using sliding-window sorted sets.
 
 ### queue/sqlite.go
 * **SqliteStorage**: SQLite driver implementing the Storage interface, utilizing WAL (Write-Ahead Logging) and atomic transaction blocks with RETURNING statements for lock-free concurrent dequeues, auto-creating schema tables, tracking scheduled execution times, and enforcing unique job constraints, rate limits, and job batching flows.

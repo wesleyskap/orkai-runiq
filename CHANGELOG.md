@@ -2,6 +2,11 @@
 
 All notable changes to the orkai-runiq project will be documented in this file.
 
+## [3.3.1] - 2026-07-04
+
+### Fixed
+- **Redis Storage WRONGTYPE Bug**: Fixed Redis type mismatch errors (`WRONGTYPE`) by converting all remaining list-based operations (`LLEN`, `LPUSH`, `LREM`, `LRANGE`) to sorted-set operations (`ZCARD`, `ZADD`, `ZREM`, `ZRANGE`) for the main pending queues (`runiq:queue:*`). This ensures that the embedded dashboard API stats, workflows, batches, search queries, and admin actions (Retry/Cancel) work seamlessly without throwing errors.
+
 ## [3.3.0] - 2026-06-06
 
 ### Added
