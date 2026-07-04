@@ -59,7 +59,8 @@ func (r *RedisStorage) enqueueReadyJob(ctx context.Context, pipe redis.Pipeliner
 		})
 		return
 	}
-	pipe.LPush(ctx, r.k("runiq:queue:"+env.Queue), env.JobID)
+	score := float64(env.Priority) - float64(time.Now().Unix())/1e11
+	pipe.ZAdd(ctx, r.k("runiq:queue:"+env.Queue), redis.Z{Score: score, Member: env.JobID})
 }
 
 func (r *RedisStorage) resolveDependencies(ctx context.Context, jobID string) error {

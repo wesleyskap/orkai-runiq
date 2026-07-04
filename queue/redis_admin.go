@@ -225,7 +225,7 @@ func (r *RedisStorage) executeCancelTx(ctx context.Context, env *JobEnvelope) er
 }
 
 func (r *RedisStorage) collectQueueIDs(ctx context.Context, queue string) ([]string, []string) {
-	pIDs, _ := r.client.LRange(ctx, r.k("runiq:queue:"+queue), 0, -1).Result()
+	pIDs, _ := r.client.ZRange(ctx, r.k("runiq:queue:"+queue), 0, -1).Result()
 	sIDs, _ := r.client.ZRange(ctx, r.k("runiq:scheduled:"+queue), 0, -1).Result()
 	aIDs, _ := r.client.SMembers(ctx, r.k("runiq:active:"+queue)).Result()
 	prIDs, _ := r.client.LRange(ctx, r.k("runiq:processed:"+queue), 0, -1).Result()

@@ -16,7 +16,7 @@ func (r *RedisStorage) collectJobIDsForStatus(ctx context.Context, status string
 
 func (r *RedisStorage) appendMetasForQueue(ctx context.Context, metas []jobMeta, q, status string) []jobMeta {
 	if status == "" || status == "pending" {
-		metas = append(metas, r.fetchMeta(ctx, r.k("runiq:queue:"+q), q, "pending")...)
+		metas = append(metas, r.fetchZSetMeta(ctx, r.k("runiq:queue:"+q), q, "pending")...)
 		metas = append(metas, r.fetchZSetMeta(ctx, r.k("runiq:scheduled:"+q), q, "pending")...)
 	}
 	if status == "" || status == "running" {
